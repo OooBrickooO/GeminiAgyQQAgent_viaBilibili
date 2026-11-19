@@ -1,30 +1,60 @@
 """
-social/mood_manager.py — 星见弥连续情绪流状态机 (基于 dsh-feiyu-mood 进阶架构)
+social/mood_manager.py — 星见弥连续情绪流状态机 V5.2 (新版 E1 四把防通胀物理锁 + M2 437条静态全复合词库)
 
 核心职责：
-1. 双层情绪模型：
-   - 宏观心境基调 mood (0~100，基准线 60.0，5小时指数半衰期，按 (moodDelta/1.25)*0.75 灵敏推进；情绪越高越好说话)
-   - 微观七维情绪 dims (happy/calm/sweet/proud/worry/sulky/jealous，0~100，60分钟指数半衰期，按 0.80x 效率累加)
-   - 第一人称过去式内心来历 last_reason + 产生场景 last_source_scene
-2. 三层渐变式上下文注入 (build_mood_injection_block)：
-   - 阶段一【脉冲层】：情绪刚变化的首轮，完整注入「（这会儿）... + （刚才）{last_reason}」（说事不说调）
-   - 阶段二【余温层】：首轮已消费但仍在半衰期内，隐去具体事件细节，仅注入心理余温底色（防失忆且防祥林嫂复读）
-   - 阶段三【跨场景桥接层】：主人私聊 ⇄ 群聊切换时，自动注入跨空间情绪延续桥接提示
+1. 7 维微观情绪结构 (happy/calm/sweet/proud/worry/sulky/jealous，0~100) + 宏观基调 mood (0~100，基准线 60.0)
+2. 统一五档阈值梯度：
+   - 0 档 (静默/未激活): 0 ~ 29
+   - 1 档 (轻度): 30 ~ 54
+   - 2 档 (中度): 55 ~ 69
+   - 3 档 (强烈): 70 ~ 89
+   - 4 档 (爆表极值): 90 ~ 100
+3. 底层防通胀四把物理锁 (新版 E1：自然演化)：
+   - 锁 1 · 五段高位阻力 (S 型边际递减): 单次原始冲量收紧至 [-35, +35]，正向增长按五段分段平滑积分 (1.00x / 0.70x / 0.45x / 0.33x / 0.22x)
+   - 锁 2 · 温和对立压制 (最高兼容 1 : 0.7 跨极复合): 暖色系 (happy/calm/sweet/proud) 与冷色系 (worry/sulky/jealous) 对立柔和回压，绝不一刀清零，保护 1:0.7 跨极共存
+   - 锁 3 · 两段式退潮衰减: >= 70 半衰期缩短至 22.5 分钟 (20~25min)，< 70 半衰期维持 55 分钟 (50~60min)，跨 70 边界精确分段指数扣减时间
+   - 锁 4 · 观察者源头限流: 单次结算最多允许变动 3 个情绪维度（按绝对值排序仅保留前 3 个），不对排名第 3 名及以后的激活维度做人为归零或额外加速衰减
+4. 极简折中派单行 Prompt 注入 (build_mood_injection_block)：
+   - 存在 last_reason 且距离记录时间 <= 3600 秒: 【当前心情】<映射词>（<极短起因>）
+   - 无起因或已超过 1 小时: 【当前心情】<映射词>
 """
 import os
 import json
 import time
 import math
 from config import MOOD_STATE_FILE, MASTER_QQ
+from social.mood_lexicon import (
+    DIM_ORDER,
+    quantize_single_tier,
+    lookup_mood_lexicon,
+    SINGLE_DIM_LEXICON,
+    MACRO_MOOD_LEXICON,
+    quantize_macro_mood_bucket,
+)
 
 BASELINE_MOOD = 60.0
-HALF_LIFE_MOOD_SEC = 5.0 * 3600.0   # 5小时半衰期（原12h过稳，缩短后潮汐起伏更鲜明灵动）
-HALF_LIFE_DIM_SEC = 60.0 * 60.0     # 60分钟半衰期（原90min，配合高爆发力脉冲实现敏锐起落）
+HALF_LIFE_MOOD_SEC = 5.0 * 3600.0        # 宏观心境 5 小时半衰期
+HALF_LIFE_DIM_HIGH_SEC = 22.5 * 60.0     # 锁 3: >= 70 强档/爆表半衰期 22.5 分钟 (20~25min)
+HALF_LIFE_DIM_LOW_SEC = 55.0 * 60.0      # 锁 3: < 70 轻/中度半衰期 55.0 分钟 (50~60min)
+HALF_LIFE_DIM_SEC = HALF_LIFE_DIM_LOW_SEC  # 向后兼容 WebUI 引用
 
-MOOD_GAIN_EFFICIENCY = 0.75         # 总体情绪获取效率：调整为此前灵敏度(/1.25)的 75%（等效推进系数 0.60）
-DIM_GAIN_EFFICIENCY = 0.80          # 7D具体小情绪获得效率：调整为此前效率的 80%
+MOOD_GAIN_EFFICIENCY = 0.75
+DIM_GAIN_EFFICIENCY = 1.00               # 锁 1 由五段分段阻力系数精准控制边际收益
+MAX_SINGLE_DIM_RAW_IMPULSE = 35.0        # 锁 1: 收紧单次单维原始冲量至 [-35, +35]
+MAX_OBSERVER_DIMS_PER_TURN = 3           # 锁 4: 单次情绪结算最多允许变动 3 个维度
 
 DIM_KEYS = ["happy", "calm", "sweet", "proud", "worry", "sulky", "jealous"]
+WARM_DIMS = ("happy", "calm", "sweet", "proud")
+COLD_DIMS = ("worry", "sulky", "jealous")
+
+# 锁 1: 五段高位阻力区间与边际系数 (跨档位平滑分段积分)
+RESISTANCE_BANDS = (
+    (0.0, 30.0, 1.00),
+    (30.0, 55.0, 0.70),
+    (55.0, 70.0, 0.45),
+    (70.0, 90.0, 0.33),
+    (90.0, 100.0, 0.22),
+)
 
 DIM_CN_NAMES = {
     "happy": "开心",
@@ -91,9 +121,155 @@ def save_mood_state(state: dict):
         print(f"⚠️ 保存情绪状态失败: {e}")
 
 
+def integrate_dim_growth(current_val: float, raw_delta: float) -> float:
+    """
+    【锁 1 · 五段高位阻力（S 型边际递减）】
+    - 原始冲量 raw_delta 先收紧至 [-35, +35]
+    - 负向冲量直接扣减并夹逼至 >= 0
+    - 正向增长按当前值所处档位逐段平滑积分：
+      0~29 (0~30): 1.00x
+      30~54 (30~55): 0.70x
+      55~69 (55~70): 0.45x
+      70~89 (70~90): 0.33x
+      90~100: 0.22x
+    """
+    cur = max(0.0, min(100.0, float(current_val or 0.0)))
+    clamped = max(-MAX_SINGLE_DIM_RAW_IMPULSE, min(MAX_SINGLE_DIM_RAW_IMPULSE, float(raw_delta or 0.0)))
+    if clamped <= 0.0:
+        return round(max(0.0, cur + clamped), 2)
+
+    rem_impulse = clamped
+    val = cur
+    for lo, hi, coeff in RESISTANCE_BANDS:
+        if val >= hi or rem_impulse <= 0.0:
+            continue
+        if val < lo:
+            val = lo
+        room = hi - val
+        needed_raw = room / coeff
+        if rem_impulse <= needed_raw:
+            val += rem_impulse * coeff
+            rem_impulse = 0.0
+            break
+        else:
+            val = hi
+            rem_impulse -= needed_raw
+
+    return round(max(0.0, min(100.0, val)), 2)
+
+
+def decay_single_dim_two_stage(val: float, dt_sec: float) -> float:
+    """
+    【锁 3 · 两段式退潮衰减】
+    - 数值 >= 70（强档/爆表）：半衰期 22.5 分钟 (HALF_LIFE_DIM_HIGH_SEC)
+    - 数值 < 70（轻/中度）：半衰期 55.0 分钟 (HALF_LIFE_DIM_LOW_SEC)
+    - 跨 70 边界衰减时，按分段指数公式精确扣减时间。
+    """
+    v0 = max(0.0, min(100.0, float(val or 0.0)))
+    dt = max(0.0, float(dt_sec or 0.0))
+    if v0 <= 0.0 or dt <= 0.0:
+        return round(v0, 1)
+
+    if v0 > 70.0:
+        # 计算从 v0 衰减到 70.0 所需的精确秒数: 70 = v0 * 0.5^(t_to_70 / T_high)
+        t_to_70 = HALF_LIFE_DIM_HIGH_SEC * (math.log(v0 / 70.0) / math.log(2.0))
+        if dt <= t_to_70:
+            res = v0 * math.pow(0.5, dt / HALF_LIFE_DIM_HIGH_SEC)
+            return round(max(0.0, min(100.0, res)), 1)
+        else:
+            rem_dt = dt - t_to_70
+            res = 70.0 * math.pow(0.5, rem_dt / HALF_LIFE_DIM_LOW_SEC)
+            return round(max(0.0, min(100.0, res)), 1)
+    else:
+        res = v0 * math.pow(0.5, dt / HALF_LIFE_DIM_LOW_SEC)
+        return round(max(0.0, min(100.0, res)), 1)
+
+
+def apply_gentle_opposite_suppression(
+    prev_dims: dict,
+    new_dims: dict,
+    effective_gains: dict,
+    suppression_ratio: float = 0.32,
+    coexist_cap_ratio: float = 0.70,
+) -> dict:
+    """
+    【锁 2 · 温和对立压制（最高兼容 1 : 0.7 跨极复合）】
+    - 暖色系 (happy, calm, sweet, proud) 与冷色系 (worry, sulky, jealous)
+    - 当一侧出现正向有效增长时，对对立侧施加柔和压制，绝不一刀清零。
+    - 1 : 0.7 跨极共存保护：
+      * 允许对立侧最高以主导侧峰值的 0.7 倍共存；
+      * 若对立侧某维高于 0.7 × 主导侧峰值，将其柔缓回压（结合本轮对立侧新增量总和 × 0.32x 与 0.7 倍边界）；
+      * 若原本就在 0.7 × 主导侧峰值以内，则仅受极轻微压制（0.10x 新增量）或保留，保护“嘴硬吃醋但心里甜丝丝”等跨极复合。
+    """
+    out = dict(new_dims)
+    warm_gain = sum(max(0.0, float(effective_gains.get(k, 0.0))) for k in WARM_DIMS)
+    cold_gain = sum(max(0.0, float(effective_gains.get(k, 0.0))) for k in COLD_DIMS)
+
+    if warm_gain <= 0.0 and cold_gain <= 0.0:
+        return out
+
+    # 判断本轮主导增长侧（若两侧同时有增长，按净主导侧对另一侧做温和压制）
+    if warm_gain >= cold_gain and warm_gain > 0.0:
+        dom_keys, opp_keys = WARM_DIMS, COLD_DIMS
+        dom_gain = warm_gain - cold_gain * 0.5
+    else:
+        dom_keys, opp_keys = COLD_DIMS, WARM_DIMS
+        dom_gain = cold_gain - warm_gain * 0.5
+
+    if dom_gain <= 0.0:
+        return out
+
+    dom_peak = max((float(out.get(k, 0.0)) for k in dom_keys), default=0.0)
+    coexist_limit = round(dom_peak * coexist_cap_ratio, 2)
+    base_pull = dom_gain * suppression_ratio
+
+    for ok in opp_keys:
+        # 若该对立维在本轮自身就有正向增长，尊重本轮复合输入，仅检查 0.7 共存边界
+        own_gain = float(effective_gains.get(ok, 0.0))
+        cur_v = float(out.get(ok, 0.0))
+        if cur_v <= 0.0:
+            continue
+
+        if cur_v > coexist_limit and dom_peak >= 30.0:
+            # 超过 0.7 × 主导侧峰值：柔缓回压至 coexist_limit 边界内（不低于 coexist_limit * 0.92，严禁清零）
+            target_v = max(coexist_limit, cur_v - max(base_pull, (cur_v - coexist_limit) * 0.75))
+            # 确保若显著超出 0.7 倍峰值，回压到 coexist_limit
+            if target_v > coexist_limit:
+                target_v = coexist_limit
+            out[ok] = round(max(0.0, target_v), 1)
+        else:
+            # 原本就在 0.7 倍以内：保护跨极共存，仅在无自身正增长时施加极轻微压制 (0.10x)，且绝不跌破原值的 85%
+            if own_gain <= 0.0:
+                mild_drop = min(cur_v * 0.15, dom_gain * 0.10)
+                out[ok] = round(max(0.0, cur_v - mild_drop), 1)
+
+    return out
+
+
+def filter_top_k_dim_deltas(dim_deltas: dict, max_dims: int = MAX_OBSERVER_DIMS_PER_TURN) -> dict:
+    """
+    【锁 4 · 观察者源头限流】
+    单次情绪结算最多允许变动 3 个情绪维度（若模型输出超过 3 个非零维度，按绝对值排序仅保留前 3 个）。
+    """
+    if not isinstance(dim_deltas, dict):
+        return {}
+    non_zero = []
+    for k in DIM_KEYS:
+        if k in dim_deltas:
+            try:
+                v = float(dim_deltas.get(k, 0.0) or 0.0)
+            except Exception:
+                v = 0.0
+            if abs(v) > 1e-6:
+                non_zero.append((k, v))
+    non_zero.sort(key=lambda item: (-abs(item[1]), DIM_KEYS.index(item[0])))
+    selected = non_zero[:max_dims]
+    return {k: v for k, v in selected}
+
+
 def get_decayed_mood_state() -> tuple[dict, float]:
     """
-    读取并计算按当前时间戳实时指数衰减后的情绪视图。
+    读取并计算按当前时间戳实时两段式退潮衰减后的情绪视图。
     返回 (decayed_view_dict, elapsed_seconds)
     """
     raw = load_mood_state()
@@ -101,15 +277,12 @@ def get_decayed_mood_state() -> tuple[dict, float]:
     dt = max(0.0, now - float(raw.get("updated_at", now)))
 
     f_mood = math.pow(0.5, dt / HALF_LIFE_MOOD_SEC) if dt > 0 else 1.0
-    f_dim = math.pow(0.5, dt / HALF_LIFE_DIM_SEC) if dt > 0 else 1.0
-
     decayed_mood = round(BASELINE_MOOD + (raw["mood"] - BASELINE_MOOD) * f_mood, 1)
     decayed_mood = max(0.0, min(100.0, decayed_mood))
 
     decayed_dims = {}
     for k in DIM_KEYS:
-        val = round(raw["dims"].get(k, 0.0) * f_dim, 1)
-        decayed_dims[k] = max(0.0, min(100.0, val))
+        decayed_dims[k] = decay_single_dim_two_stage(raw["dims"].get(k, 0.0), dt)
 
     view = {
         "mood": decayed_mood,
@@ -124,56 +297,22 @@ def get_decayed_mood_state() -> tuple[dict, float]:
 
 
 def mood_band_phrase(mood: float) -> str:
-    """
-    将宏观基调分值 (0~100，基准线 60.0) 转化为第一人称自然心境描述与好说话程度：
-    - 基准时 (55~65)：心情表现为平静空白，对熟人热情，对陌生人正常；
-    - 情绪越高越好说话（越温和宽容、好商量）；情绪越低越没那么好说话。
-    """
-    m = round(mood)
-    if m >= 84:
-        return "心里亮堂雀跃、心情极佳（情绪很高，这会儿超级好说话，对谁都温和宽容、好商量）"
-    if m >= 74:
-        return "心里愉悦轻快（情绪挺高，这会儿非常好说话，平时傲娇的事也容易松口）"
-    if m >= 66:
-        return "心里温和舒展（情绪高于基准，比平时更好说话一些）"
-    if m >= 55:
-        return "心情平静空白（日常基准态：心里无特殊波澜，对熟人热情，对陌生人正常自然）"
-    if m >= 42:
-        return "心里稍微有点闷闷的（情绪低于基准，没平时那么好说话，略带点小挑剔或小傲娇）"
-    return "心里挺低落难受的（情绪低谷，这会儿不太好说话，对不熟的人态度简短冷淡）"
+    """将宏观基调分值 (0~100) 转化为 M2 基线简短描述（向后兼容外部调用）"""
+    bucket = quantize_macro_mood_bucket(mood)
+    return MACRO_MOOD_LEXICON[bucket]
 
 
 def dim_feel_phrase(key: str, val: float) -> str:
-    """将微观情绪维度转化为自然口语心理感受"""
-    v = round(val)
-    if v < 15:
+    """将单维微观情绪转化为五档对应短词（<30 未激活返回空串，向后兼容外部调用）"""
+    tier = quantize_single_tier(val)
+    if tier <= 0 or key not in DIM_KEYS:
         return ""
-    high = v >= 42
-    mapping = {
-        "happy":   "心里直冒泡地开心" if high else "带着点小雀跃",
-        "calm":    "整个人很踏实自在" if high else "心里挺安稳松弛的",
-        "sweet":   "心里甜丝丝的还有点害羞" if high else "带着点软乎乎的甜意",
-        "proud":   "尾巴都快翘天上去了（傲娇小得意）" if high else "心里暗暗有点小得意",
-        "worry":   "心里直犯嘀咕、挺挂心心疼的" if high else "稍微有点替对方操心",
-        "sulky":   "心里堵着一口小闷气、有点委屈" if high else "稍微有点小别扭小郁闷",
-        "jealous": "酸溜溜的有点吃味" if high else "心里泛起一点点小醋意",
-    }
-    return mapping.get(key, "")
+    return SINGLE_DIM_LEXICON.get((key, tier), "")
 
 
 def _render_current_feel_line(mood: float, dims: dict) -> str:
-    """合成（这会儿）心理状态短句"""
-    base_phrase = mood_band_phrase(mood)
-    sorted_dims = sorted(
-        [(k, v) for k, v in dims.items() if v >= 15.0],
-        key=lambda x: x[1],
-        reverse=True
-    )
-    dim_phrases = [dim_feel_phrase(k, v) for k, v in sorted_dims[:2]]
-    dim_phrases = [p for p in dim_phrases if p]
-    if dim_phrases:
-        return f"{base_phrase}，{'，'.join(dim_phrases)}"
-    return base_phrase
+    """使用 M2 437条静态全复合词库 O(1) 查表返回当前心情短词"""
+    return lookup_mood_lexicon(mood, dims)
 
 
 def apply_mood_update(
@@ -183,9 +322,11 @@ def apply_mood_update(
     source_scene: str
 ) -> dict:
     """
-    由慢车道观察者调用：先按当前时间结算衰减，再应用本轮情绪增量并持久化。
-    - mood 按 round((mood_delta / 1.25) * 0.75, 1) 推进（获取效率为原 /1.25 的 75%），并记录真实历史轨迹点至 history
-    - dims 单次冲量上限 [-50.0, 65.0]，按 80% 获得效率 (DIM_GAIN_EFFICIENCY = 0.80) 累加并夹逼在 [0, 100]
+    由慢车道观察者调用：先按当前时间结算两段式衰减，再应用四把防通胀物理锁并持久化。
+    - 锁 4: 单次最多允许变动 3 个微观维度（按绝对值取 Top-3）
+    - 锁 1: 单维原始冲量夹逼至 [-35, +35]，正向增长按五段阻力平滑积分
+    - 锁 2: 暖/冷对立侧柔和压制 + 1:0.7 跨极共存保护
+    - 新版 E1: 不对排名第 3 名及以后的激活维度做人为归零或额外加速衰减
     """
     raw_prev = load_mood_state()
     view, _ = get_decayed_mood_state()
@@ -195,18 +336,27 @@ def apply_mood_update(
     mood_step = round((clamped_delta / 1.25) * MOOD_GAIN_EFFICIENCY, 1)
     new_mood = max(0.0, min(100.0, round(view["mood"] + mood_step, 1)))
 
-    new_dims = dict(view["dims"])
+    # 锁 4: 观察者源头限流 (最多保留前 3 个变动维度)
+    filtered_deltas = filter_top_k_dim_deltas(dim_deltas, max_dims=MAX_OBSERVER_DIMS_PER_TURN)
+
+    prev_dims = dict(view["dims"])
+    new_dims = dict(prev_dims)
+    effective_gains = {}
     max_dim_shift = 0.0
-    if isinstance(dim_deltas, dict):
-        for k in DIM_KEYS:
-            if k in dim_deltas:
-                raw_d = max(-50.0, min(65.0, float(dim_deltas.get(k, 0.0) or 0.0)))
-                d_val = round(raw_d * DIM_GAIN_EFFICIENCY, 1)
-                max_dim_shift = max(max_dim_shift, abs(d_val))
-                new_dims[k] = max(0.0, min(100.0, round(new_dims.get(k, 0.0) + d_val, 1)))
+
+    # 锁 1: 五段高位阻力积分
+    for k, raw_d in filtered_deltas.items():
+        updated_v = integrate_dim_growth(prev_dims.get(k, 0.0), raw_d * DIM_GAIN_EFFICIENCY)
+        eff_diff = round(updated_v - prev_dims.get(k, 0.0), 2)
+        effective_gains[k] = eff_diff
+        max_dim_shift = max(max_dim_shift, abs(eff_diff))
+        new_dims[k] = round(updated_v, 1)
+
+    # 锁 2: 温和对立压制 (1:0.7 跨极共存保护)
+    new_dims = apply_gentle_opposite_suppression(prev_dims, new_dims, effective_gains)
 
     clean_reason = (reason or "").strip()
-    meaningful_shift = (abs(clamped_delta) >= 1.5 or max_dim_shift >= 4.0) and bool(clean_reason)
+    meaningful_shift = (abs(clamped_delta) >= 1.5 or max_dim_shift >= 3.0) and bool(clean_reason)
 
     # 维护最近 48 小时的真实宏观心境历史轨迹点，供 WebUI 绘制真实情感心电图 (EKG)
     cutoff_ts = now - 48.0 * 3600.0
@@ -230,7 +380,7 @@ def apply_mood_update(
         "dims": new_dims,
         "last_reason": clean_reason if meaningful_shift else view["last_reason"],
         "last_source_scene": source_scene if meaningful_shift else view["last_source_scene"],
-        "updated_at": now if (meaningful_shift or abs(mood_step) >= 0.5) else view["updated_at"],
+        "updated_at": now if (meaningful_shift or abs(mood_step) >= 0.5 or max_dim_shift >= 1.0) else view["updated_at"],
         "pulse_consumed": False if meaningful_shift else view["pulse_consumed"],
         "decay_noted": False if meaningful_shift else view["decay_noted"],
         "history": history,
@@ -239,97 +389,35 @@ def apply_mood_update(
     return new_state
 
 
-def build_mood_injection_block(current_scene: str, consume_pulse: bool = True) -> str:
+def build_mood_injection_block(current_scene: str = "", consume_pulse: bool = True) -> str:
     """
-    构建注入 context_builder.py 的三层渐变式情绪上下文块：
-    - 脉冲层（刚发生情绪波动的第 1 轮）：完整注入（这会儿）+（刚才）{last_reason}
-    - 跨场景桥接层（Scene-Switch Bridge）：当私聊与群聊场景切换时生成桥接内心独白
-    - 余温层（已消费脉冲但仍在半衰期内）：只注入心理底色与余温，隐去旧事件防复读
+    【1.5 极简折中派单行 Prompt 注入】
+    彻底删除冗长的多行心理旁白以及“不是非这样不可”等卸力引导，改为极简高密度单行注入：
+    - 若存在 last_reason 且距离记录时间 <= 3600 秒（1 小时）：
+      【当前心情】<映射词>（<极短起因>）
+    - 若无起因或已超过 1 小时：
+      【当前心情】<映射词>
     """
     view, dt = get_decayed_mood_state()
     mood = view["mood"]
     dims = view["dims"]
-    last_reason = view["last_reason"]
-    last_scene = view["last_source_scene"]
-    max_dim_val = max(dims.values()) if dims else 0.0
-    has_active_emotion = (max_dim_val >= 15.0) or (abs(mood - BASELINE_MOOD) >= 8.0)
+    last_reason = (view.get("last_reason") or "").strip()
 
-    feel_line = _render_current_feel_line(mood, dims)
-    mood_header = f"【当前内心情绪底色（心境 {mood:.0f}/100 · 基准线 60 | 情绪越高越好说话）】"
+    if consume_pulse and not view.get("pulse_consumed", True):
+        raw = load_mood_state()
+        raw["pulse_consumed"] = True
+        save_mood_state(raw)
 
-    # 1. 阶段一 & 阶段三：脉冲层 / 跨场景桥接层 (情绪刚变化后的首轮注入)
-    if not view["pulse_consumed"] and last_reason and dt <= 3600.0:
-        if consume_pulse:
-            raw = load_mood_state()
-            raw["pulse_consumed"] = True
-            save_mood_state(raw)
-
-        # 判断是否发生了跨场景切换 (主人/好友私聊 ⇄ 群聊)
-        if current_scene and last_scene and current_scene != last_scene:
-            is_last_priv = (last_scene == "master_private" or last_scene.startswith("private_"))
-            is_curr_priv = (current_scene == "master_private" or current_scene.startswith("private_"))
-            if is_last_priv and current_scene.startswith("group_"):
-                who_desc = f"自家主人({MASTER_QQ})" if last_scene == "master_private" else "好友"
-                return (
-                    f"{mood_header}\n"
-                    f"（这会儿）{feel_line}\n"
-                    f"（跨场景余温）刚才你在和{who_desc}的私聊里：{last_reason}。现在你已切到【群聊({current_scene})】里回应群友"
-                    f"（注意替对方保密私聊具体内容，必须调用 send_group_msg 在群内发言，也别把这段心理描述念出来）。"
-                )
-            elif last_scene.startswith("group_") and is_curr_priv:
-                if current_scene == "master_private":
-                    return (
-                        f"{mood_header}\n"
-                        f"（这会儿）{feel_line}\n"
-                        f"（跨场景余温）刚才你在群里：{last_reason}。现在你已切回【与主人({MASTER_QQ})的专属私聊】，"
-                        f"可以自然流露一点刚才的小情绪或顺势向他吐槽，但务必调用 send_private_msg 发在私聊里，绝不要误发回群聊。"
-                    )
-                else:
-                    return (
-                        f"{mood_header}\n"
-                        f"（这会儿）{feel_line}\n"
-                        f"（跨场景余温）刚才你在群里：{last_reason}。现在你正在【私聊({current_scene})】中回应好友，"
-                        f"请务必调用 send_private_msg 回复私聊，切勿误发到群聊。"
-                    )
-
-        # 同场景脉冲注入 (原汁原味 feiyu-mood event 模式：说事不说调)
-        return (
-            f"{mood_header}\n"
-            f"（这会儿）{feel_line}\n"
-            f"（刚才）{last_reason}\n"
-            f"（注：这是你这会儿心里的底子，不是非这样不可——对方聊别的你就按自己的判断自然接话，也千万别把这段心理描述原样念出来。）"
-        )
-
-    # 2. 阶段二：余温层 (具体事件脉冲已消费，但情绪仍在半衰期内，防跨轮失忆且防祥林嫂复读)
-    if has_active_emotion:
-        return (
-            f"{mood_header}\n"
-            f"（这会儿）早些时候攒下的那点情绪余温还在心里留着底子：{feel_line}。"
-            f"不用再去翻旧账提之前为什么会有这个心情，带着这份自然的心境顺着眼前的天聊即可。"
-        )
-
-    # 3. 消散提示 (当情绪已自然平复回基准线，提醒一次回归平静)
-    if not view["decay_noted"] and dt >= 1200.0:
-        if consume_pulse:
-            raw = load_mood_state()
-            raw["decay_noted"] = True
-            save_mood_state(raw)
-        return (
-            f"{mood_header}\n"
-            "（这会儿）过了好一阵子，之前那点情绪劲儿已经慢慢淡了，心情回到了平静空白的基准状态（对熟人热情，对陌生人正常自然）。"
-        )
-
-    # 4. 稳态基准层 (处于基准线 60 附近且无特殊活跃脉冲时：平静空白，对熟人热情，对陌生人正常)
-    return (
-        f"{mood_header}\n"
-        f"（这会儿）{feel_line}。"
-    )
+    mapped_word = lookup_mood_lexicon(mood, dims)
+    if last_reason and dt <= 3600.0:
+        return f"【当前心情】{mapped_word}（{last_reason}）"
+    return f"【当前心情】{mapped_word}"
 
 
 def get_mood_brief_for_observer() -> str:
     """生成供慢车道观察者参考的当前情绪快照简报"""
     view, _ = get_decayed_mood_state()
-    active_dims = [f"{DIM_CN_NAMES.get(k, k)}:{v:.0f}" for k, v in view["dims"].items() if v >= 8.0]
+    active_dims = [f"{DIM_CN_NAMES.get(k, k)}:{v:.0f}" for k, v in view["dims"].items() if v >= 15.0]
     dims_str = "，".join(active_dims) if active_dims else "平静无波澜"
-    return f"心境基调={view['mood']:.1f}/100，活跃维度=[{dims_str}]，上次来历=「{view['last_reason'] or '无'}」"
-
+    mapped = lookup_mood_lexicon(view["mood"], view["dims"])
+    return f"心境基调={view['mood']:.1f}/100（{mapped}），活跃维度=[{dims_str}]，上次来历=「{view['last_reason'] or '无'}」"

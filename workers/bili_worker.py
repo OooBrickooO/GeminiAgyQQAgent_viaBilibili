@@ -323,14 +323,39 @@ def record_seen_bili_video(bvid: str):
         print(f"⚠️ [bili_worker] 写入 seen_bili_videos 异常: {e}")
 
 
+def _default_bili_diagnostics() -> dict:
+    return {
+        "watched_count": 0,
+        "json_success_count": 0,
+        "json_fail_count": 0,
+        "evaluations": [],
+        "like_attempts": 0,
+        "like_success": 0,
+        "fav_attempts": 0,
+        "fav_success": 0,
+        "fav_fallback_default": 0,
+        "fav_details": [],
+        "comment_attempts": 0,
+        "comment_success": 0,
+        "dynamic_attempts": 0,
+        "dynamic_success": 0,
+        "last_error": "",
+    }
+
+
 def load_today_bili_feed() -> dict:
-    """加载今日冲浪足迹缓存"""
+    """加载今日冲浪足迹缓存（含轻量诊断账本 diagnostics）"""
     today_str = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=8)).strftime("%Y-%m-%d")
     if os.path.exists(BILI_CACHE_FILE):
         try:
             with open(BILI_CACHE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if data.get("date") == today_str:
+                    if not isinstance(data.get("diagnostics"), dict):
+                        data["diagnostics"] = _default_bili_diagnostics()
+                    else:
+                        for k, v in _default_bili_diagnostics().items():
+                            data["diagnostics"].setdefault(k, v)
                     return data
         except Exception:
             pass
@@ -339,8 +364,44 @@ def load_today_bili_feed() -> dict:
         "watched": [],
         "master_notified": False,
         "master_shared_count": 0,
-        "group_shared_count": 0
+        "group_shared_count": 0,
+        "diagnostics": _default_bili_diagnostics(),
     }
+
+
+def extract_three_segment_subtitles(sub_text: str, max_total_chars: int = 3300) -> str:
+    """
+    【阶段三 3.2 字幕三段精华摘录】
+    对超长字幕截取“开头 + 中段 + 结尾”精华，总长严格控制在 3000 ~ 3500 字以内（默认上限 3300 字），
+    彻底消除长上下文截断 JSON。
+    """
+    if not sub_text or not isinstance(sub_text, str):
+        return "(本视频无官方字幕，请参考简介与评论)"
+    text = sub_text.strip()
+    if not text:
+        return "(本视频无官方字幕，请参考简介与评论)"
+    if len(text) <= max_total_chars:
+        return text
+
+    # 为分段标记预留约 90 字，确保最终总长度 <= max_total_chars (在 3000~3500 字区间内)
+    marker_budget = 90
+    usable = max(1200, max_total_chars - marker_budget)
+    head_len = int(usable * 0.36)
+    mid_len = int(usable * 0.32)
+    tail_len = usable - head_len - mid_len
+
+    head_part = text[:head_len].strip()
+    mid_center = len(text) // 2
+    mid_start = max(head_len, mid_center - (mid_len // 2))
+    mid_part = text[mid_start: mid_start + mid_len].strip()
+    tail_part = text[-tail_len:].strip()
+
+    combined = (
+        f"【开头片段】\n{head_part}\n\n"
+        f"【...中段高能摘录...】\n{mid_part}\n\n"
+        f"【...结尾收束片段】\n{tail_part}"
+    )
+    return combined[:max_total_chars]
 
 
 def save_today_bili_feed(data: dict):
@@ -551,7 +612,7 @@ async def _trigger_immediate_bili_share(note: dict, feed_data: dict):
 
 
 async def run_single_exploration_round() -> bool:
-    """执行一轮单次高能冲浪探索，返回是否成功完成探索"""
+    """执行一轮单次高能冲浪探索（5个候选粗筛 + 单视频精看 medium + 三段字幕精华 + 双轨收藏/诊断记账）"""
     now_utc8 = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=8)
     today_str = now_utc8.strftime("%Y-%m-%d")
 
@@ -564,26 +625,26 @@ async def run_single_exploration_round() -> bool:
         keyword = random.choice(ALL_SURF_KEYWORDS)
         print(f"🏄 [B站冲浪] 弥酱开启本轮闲暇摸鱼，探索关键词: 【{keyword}】...")
 
-    # 2. 阶段 1: 零 Token 粗筛 (拉取 30 个综合排序候选，涵盖最新当季与高潜热度)
-    candidates = await search_videos(keyword, num=30, order="totalrank")
+    # 2. 阶段 1: 零 Token 粗筛 (每轮仅粗筛前 5 个候选，5 个/批)
+    candidates = await search_videos(keyword, num=15, order="totalrank")
     if not candidates:
         print("🏄 [B站冲浪] 未检索到有效视频，略过本轮。")
         return False
 
     seen_set = set(load_seen_bili_videos())
-    fresh_candidates = [c for c in candidates if c.get("bvid") and c.get("bvid") not in seen_set]
+    fresh_candidates = [c for c in candidates if c.get("bvid") and c.get("bvid") not in seen_set][:5]
     if not fresh_candidates:
         print("🏄 [B站冲浪] 本批次视频均已阅过，略过本轮。")
         return False
 
-    # 按多指标综合加权算法重排优先度（时效阶梯、播放对数平滑、点赞/收藏率、UP粉丝、反广告）
+    # 按多指标综合加权算法对本批最多 5 个粗筛候选重排优先度
     ranked_candidates = await rank_candidates_multi_factor(fresh_candidates, keyword=keyword)
     if not ranked_candidates:
         print("🏄 [B站冲浪] 无符合综合优质标准的候选，略过本轮。")
         return False
 
-    # 从得分最高的前 2 名优质候选合并拉取，单次调用完成 Top-2 批量评价（调整 1-γ）
-    top_candidates = ranked_candidates[:2]
+    # 3. 阶段 2: 单视频精看（每次冲浪只精看 1 个最优质视频，大幅提升 JSON 稳定率与手账质量）
+    top_candidates = ranked_candidates[:1]
     bundles = []
     for target_video in top_candidates:
         bvid = target_video.get("bvid")
@@ -593,7 +654,7 @@ async def run_single_exploration_round() -> bool:
         score_prio = target_video.get("_multi_score", 0)
         record_seen_bili_video(bvid)
 
-        print(f"🎯 [B站冲浪] 锁定优质候选: 【{title}】({bvid}) [时效: {tier_str} ({pub_str}), 综合得分: {score_prio}]，拉取字幕与热评...")
+        print(f"🎯 [B站冲浪] 锁定本轮唯一精看候选: 【{title}】({bvid}) [时效: {tier_str} ({pub_str}), 综合得分: {score_prio}]，拉取字幕与热评...")
         detail = await get_video_details(bvid)
         cid = detail.get("cid", 0)
 
@@ -610,7 +671,7 @@ async def run_single_exploration_round() -> bool:
         )
 
         sub_text = sub_res.get("full_text", "") if sub_res.get("has_subtitle") else ""
-        trimmed_subs = sub_text[:5000] if sub_text else "(本视频无官方字幕，请参考简介与评论)"
+        trimmed_subs = extract_three_segment_subtitles(sub_text, max_total_chars=3300)
 
         com_lines = []
         for c in hot_comments:
@@ -645,64 +706,63 @@ async def run_single_exploration_round() -> bool:
     fixed_cats_str = " / ".join(BILI_FIXED_FOLDER_CATEGORIES)
     existing_folders_str = "、".join(existing_folder_titles) if existing_folder_titles else "(除默认收藏夹外暂未创建分类夹)"
 
-    videos_block_parts = []
-    for idx, bd in enumerate(bundles, 1):
-        det = bd["detail"]
-        videos_block_parts.append(
-            f"===【候选视频 {idx} | bvid: {bd['bvid']}】===\n"
-            f"- 标题：{bd['title']}\n"
-            f"- UP主：{det.get('author')}\n"
-            f"- 播放量：{det.get('play')}\n"
-            f"- 简介：{det.get('desc', '')[:200]}\n"
-            f"- 视频字幕摘录（前5000字）：\n{bd['trimmed_subs']}\n"
-            f"- 前排观众热评与楼中楼：\n{bd['comments_str']}\n"
-        )
-    videos_section = "\n".join(videos_block_parts)
-    expected_bvids = [bd["bvid"] for bd in bundles]
+    bd = bundles[0]
+    det = bd["detail"]
+    videos_section = (
+        f"===【精看视频 | bvid: {bd['bvid']}】===\n"
+        f"- 标题：{bd['title']}\n"
+        f"- UP主：{det.get('author')}\n"
+        f"- 播放量：{det.get('play')}\n"
+        f"- 简介：{det.get('desc', '')[:200]}\n"
+        f"- 视频字幕三段精华摘录（开头+中段+结尾，3300字内）：\n{bd['trimmed_subs']}\n"
+        f"- 前排观众热评与楼中楼：\n{bd['comments_str']}\n"
+    )
+    expected_bvids = [bd["bvid"]]
 
-    # 4. 阶段 3: 单次批量推理评估 Top-2（口吻与打分解耦 + 重新校准评分门槛）
+    # 4. 阶段 3: 单视频精看评估（medium 强度 + target_domains=["none"] + 评分与口吻彻底解耦）
     eval_prompt = (
         f"{STATIC_PERSONA}\n\n"
-        f"【情境设定】：你现在在白天空闲时正在 B站 摸鱼冲浪，刚刚连看了下面 {len(bundles)} 个视频。"
-        "请以星见弥（弥酱）的真实内心第一视角，阅读每个视频的资料并分别写下【冲浪手账】。\n"
-        f"【本轮评论口吻风格（仅用于决定评论/吐槽措辞风格，严禁因为口吻犀利或傲娇而压低客观评分或抑制收藏意愿）】：{selected_style}\n\n"
+        f"【情境设定】：你现在在白天空闲时正在 B站 摸鱼冲浪，刚刚认真看完了下面这个视频。"
+        "请以星见弥（弥酱）的真实内心第一视角，写下【冲浪手账】。\n"
+        f"【本轮评论口吻风格】：{selected_style}\n"
+        "【评分与评论口吻彻底解耦铁律】：**打分 (score) 与收藏意愿 (should_favorite) 只看视频本身的质量、干货与趣味！绝不能因为本轮随机抽到了“吐槽/考据/无感”评论风格就刻意压低评分或不点收藏！** 在 B 站随手点收藏就像存书签一样自然，只要视频有用、好玩、有梗或值得以后翻看即可收藏！\n\n"
         f"{videos_section}\n"
         f"【账号现有分类收藏夹】：{existing_folders_str}\n"
         f"【固定 7 大分类收藏夹候选（决定收藏时从中选一个）】：{fixed_cats_str}\n\n"
         f"【你最近发过的评论（严禁语义/句式/口癖重复，禁止任何‘挺好玩的，学到了点新东西’类模板客套话）】：\n{recent_comments_hint}\n\n"
         "【客观评分与互动校准标准】：\n"
         "- 85~100分：惊艳神作 / 笑到拍桌 / 硬核干货满满 → 强烈推荐点赞+收藏+关注UP主\n"
-        "- 75~84分：优质好看 / 挺有梗或有收获 / 制作很用心 → 值得点赞+收藏 (`should_favorite`: true)+留评\n"
-        "- 62~74分：不错有趣 / 顺眼耐看 → 值得点赞与顺手留一条自然短评\n"
-        "- 60分以下：确实普通无感、流水账或营销广告\n\n"
+        "- 72~84分：优质好看 / 挺有梗或有收获 / 制作很用心 → 值得点赞+收藏 (`should_favorite`: true)+留评\n"
+        "- 62~71分：不错有趣 / 顺眼耐看（若觉得某处有梗或实用也可开启 `should_favorite`: true 随手存书签）\n"
+        "- 60分以下：确实粗制滥造、流水账或营销广告\n\n"
         "【评价任务】：请严格输出合法的纯 JSON 对象（严禁使用 markdown 代码块围栏，严禁在 JSON 内写 // 注释，也不要输出多余正文），格式如下：\n"
         "{\n"
-        '  "evaluations": [\n'
-        '    {\n'
-        '      "bvid": "填入对应视频的BV号",\n'
-        '      "score": "<0到100之间的整数，请按上面评分细则诚实打出真实喜爱度>",\n'
-        '      "attitude": "喜欢安利 或 普通无感 或 吐槽踩雷 三选一",\n'
-        '      "tier": "值得分享 或 随便看看 或 不值当",\n'
-        '      "share_target": "group 或 master_private 或 none（大众整活/搞笑/游戏选group；AI/硬核技术/科普/私房话题选master_private）",\n'
-        '      "quoted_detail": "必须原样或精准复述一条该视频的字幕台词片段或前排热评具体槽点，证明你真的看懂了",\n'
-        '      "summary_points": "80~140字核心内容笔记：具体讲了什么案例/论点、转折在哪、最好笑或最硬核的1~2个细节",\n'
-        '      "highlight_or_slot": "第一人称视角：这个视频真正戳中我或让我忍不住想吐槽的具体点",\n'
-        '      "hot_memes": "评论区与楼中楼里大家都在刷什么梗、或者哪条神回复最好玩",\n'
-        '      "keywords": ["关键词1", "关键词2", "关键词3"],\n'
-        '      "one_sentence_comment": "以弥酱第一视角给出的真实短评或俏皮吐槽（35字内，必须体现上面 quoted_detail 的具体内容，末尾不带句号）",\n'
-        '      "should_favorite": "<true或false：觉得优质/好玩/值得日后回看或二刷即填true，通常score>=75均可填true>",\n'
-        f'      "target_folder": "从 [{fixed_cats_str}] 中选最精准的一个（优先选用账号已创建的分类夹）",\n'
-        '      "should_comment": "<true或false：有真实感触或吐槽点即可填true>",\n'
-        '      "video_comment": "打算发在B站该视频评论区的一句话短评或楼中楼回复（15~55字，结合字幕台词或热评细节并贴合本轮口吻，绝不说空泛客套话，末尾不带句号）",\n'
-        '      "target_rpid": 0,\n'
-        '      "should_follow_up": "<true或false：UP主非常有才华或合胃口且score>=82时填true>"\n'
-        '    }\n'
-        '  ]\n'
+        f'  "bvid": "{bd["bvid"]}",\n'
+        '  "score": 78,\n'
+        '  "attitude": "喜欢安利 或 普通无感 或 吐槽踩雷 三选一",\n'
+        '  "tier": "值得分享 或 随便看看 或 不值当",\n'
+        '  "share_target": "group 或 master_private 或 none（大众整活/搞笑/游戏选group；AI/硬核技术/科普/私房话题选master_private）",\n'
+        '  "quoted_detail": "必须原样或精准复述一条该视频的字幕台词片段或前排热评具体槽点，证明你真的看懂了",\n'
+        '  "summary_points": "80~140字核心内容笔记：具体讲了什么案例/论点、转折在哪、最好笑或最硬核的1~2个细节",\n'
+        '  "highlight_or_slot": "第一人称视角：这个视频真正戳中我或让我忍不住想吐槽的具体点",\n'
+        '  "hot_memes": "评论区与楼中楼里大家都在刷什么梗、或者哪条神回复最好玩",\n'
+        '  "keywords": ["关键词1", "关键词2", "关键词3"],\n'
+        '  "one_sentence_comment": "以弥酱第一视角给出的真实短评或俏皮吐槽（35字内，必须体现上面 quoted_detail 的具体内容，末尾不带句号）",\n'
+        '  "should_favorite": true,\n'
+        f'  "target_folder": "从 [{fixed_cats_str}] 中选最精准的一个",\n'
+        '  "should_comment": true,\n'
+        '  "video_comment": "打算发在B站该视频评论区的一句话短评或楼中楼回复（15~55字，结合字幕台词或热评细节并贴合本轮口吻，绝不说空泛客套话，末尾不带句号）",\n'
+        '  "target_rpid": 0,\n'
+        '  "should_follow_up": false\n'
         "}\n"
         "补充规则：若选择回复某条热评盖楼中楼，将 target_rpid 填为该热评的整数 rpid，否则填 0。"
     )
 
-    dynamic_conv_id = str(uuid.uuid5(BOT_NAMESPACE, f"bili_surf_{today_str}_{bundles[0]['bvid']}"))
+    feed_data = load_today_bili_feed()
+    diag = feed_data.setdefault("diagnostics", _default_bili_diagnostics())
+    diag["watched_count"] = int(diag.get("watched_count", 0)) + 1
+
+    dynamic_conv_id = str(uuid.uuid5(BOT_NAMESPACE, f"bili_surf_{today_str}_{bd['bvid']}"))
     try:
         await execute_agy_inference(
             chat_id_str="bili_worker_channel",
@@ -711,10 +771,14 @@ async def run_single_exploration_round() -> bool:
             messages_list=[eval_prompt],
             custom_semaphore=BILI_AGY_SEMAPHORE,
             target_domains=["none"],
-            effort=BILI_AGY_EFFORT
+            effort="medium"
         )
     except Exception as e:
-        print(f"⚠️ [bili_worker] 大模型推理异常: {e}")
+        err_msg = f"大模型推理异常: {e}"
+        print(f"⚠️ [bili_worker] {err_msg}")
+        diag["json_fail_count"] = int(diag.get("json_fail_count", 0)) + 1
+        diag["last_error"] = err_msg
+        save_today_bili_feed(feed_data)
         return False
 
     transcript_path = get_transcript_path(dynamic_conv_id)
@@ -741,11 +805,15 @@ async def run_single_exploration_round() -> bool:
             print(f"⚠️ [bili_worker] 解析评价 JSON 失败: {e}")
 
     if not eval_items:
-        print(f"⚠️ [bili_worker] 未能从响应中解析出有效评价 JSON，安全跳过本轮候选: {expected_bvids}")
+        err_msg = f"未能从响应中解析出有效评价 JSON ({expected_bvids})"
+        print(f"⚠️ [bili_worker] {err_msg}")
+        diag["json_fail_count"] = int(diag.get("json_fail_count", 0)) + 1
+        diag["last_error"] = err_msg
+        save_today_bili_feed(feed_data)
         return False
 
+    diag["json_success_count"] = int(diag.get("json_success_count", 0)) + 1
     eval_by_bvid = {str(x.get("bvid", "")).strip(): x for x in eval_items if isinstance(x, dict)}
-    feed_data = load_today_bili_feed()
     processed_count = 0
 
     for idx, bd in enumerate(bundles):
@@ -754,7 +822,7 @@ async def run_single_exploration_round() -> bool:
         detail = bd["detail"]
         eval_data = eval_by_bvid.get(bvid) or (eval_items[idx] if idx < len(eval_items) else None)
         if not eval_data or "score" not in eval_data:
-            print(f"⚠️ [bili_worker] 批量响应中缺少视频《{title}》({bvid}) 的有效评分，跳过。")
+            print(f"⚠️ [bili_worker] 响应中缺少视频《{title}》({bvid}) 的有效评分，跳过。")
             continue
 
         try:
@@ -762,7 +830,7 @@ async def run_single_exploration_round() -> bool:
         except Exception:
             score = 0
 
-        attitude = str(eval_data.get("attitude", "")).strip() or ("喜欢安利" if score >= 75 else ("吐槽踩雷" if score < 55 else "普通无感"))
+        attitude = str(eval_data.get("attitude", "")).strip() or ("喜欢安利" if score >= 72 else ("吐槽踩雷" if score < 55 else "普通无感"))
         tier = eval_data.get("tier", "值得分享" if score >= 72 else "随便看看")
         share_target = eval_data.get("share_target", "none")
         quoted_detail = str(eval_data.get("quoted_detail", "")).strip()
@@ -796,28 +864,70 @@ async def run_single_exploration_round() -> bool:
 
         print(f"⭐ [B站冲浪] 弥酱评价《{title}》: {score}分 ({attitude}/{tier}, 目标:{share_target}) | 心得: “{comment_text}” | 口吻: {selected_style}")
 
+        diag.setdefault("evaluations", []).append({
+            "bvid": bvid,
+            "title": title[:36],
+            "score": score,
+            "attitude": attitude,
+            "should_favorite": should_fav,
+            "target_folder": folder,
+        })
+
         # 5. 真实点赞动作 (score >= 60 或模型有意愿收藏)
         liked_ok = False
         if score >= 60 or should_fav:
+            diag["like_attempts"] = int(diag.get("like_attempts", 0)) + 1
             like_res = await like_video(bvid)
             liked_ok = like_res.get("ok", False)
             if liked_ok:
+                diag["like_success"] = int(diag.get("like_success", 0)) + 1
                 print(f"👍 [B站足迹] 弥酱已给视频【{title}】点赞！")
             else:
-                print(f"⚠️ [B站足迹] 点赞视频【{title}】未完成: {like_res.get('error') or like_res.get('message')}")
+                err_l = like_res.get("error") or like_res.get("message") or ""
+                diag["last_error"] = f"like({bvid}): {err_l}"
+                print(f"⚠️ [B站足迹] 点赞视频【{title}】未完成: {err_l}")
 
-        # 5.1 真实收藏动作 (score >= 75 或 (should_fav and score >= 70)，开启自动建夹并兜底默认夹)
+        # 5.1 真实收藏动作 (门槛校准: ((score >= 72) or (should_fav and score >= 68)) and attitude != "吐槽踩雷")
+        # 保持 allow_auto_create=False（禁止自动建夹），启用选项 B 默认夹极端兜底 (fallback_to_default=True)
         fav_ok = False
         actual_folder = ""
-        if (score >= 75 or (should_fav and score >= 70)) and folder:
-            fav_res = await favorite_video(bvid, folder_name=folder, allow_auto_create=True)
+        fav_trigger = ((score >= 72) or (should_fav and score >= 68)) and (attitude != "吐槽踩雷")
+        if fav_trigger and folder:
+            diag["fav_attempts"] = int(diag.get("fav_attempts", 0)) + 1
+            fav_res = await favorite_video(
+                bvid,
+                folder_name=folder,
+                allow_auto_create=False,
+                fallback_to_default=True,
+            )
             fav_ok = fav_res.get("ok", False)
             if fav_ok:
                 actual_folder = fav_res.get("folder", folder)
-                print(f"💖 [B站足迹] 已成功收藏视频【{title}】至 B站【{actual_folder}】！")
+                diag["fav_success"] = int(diag.get("fav_success", 0)) + 1
+                if fav_res.get("fallback_default"):
+                    diag["fav_fallback_default"] = int(diag.get("fav_fallback_default", 0)) + 1
+                diag.setdefault("fav_details", []).append({
+                    "bvid": bvid,
+                    "title": title[:30],
+                    "status": "fallback_default" if fav_res.get("fallback_default") else "hit",
+                    "requested_folder": folder,
+                    "actual_folder": actual_folder,
+                    "via": fav_res.get("via", "bilibili_api"),
+                    "reason": fav_res.get("fallback_reason", ""),
+                })
+                print(f"💖 [B站足迹] 已成功收藏视频【{title}】至 B站【{actual_folder}】(通道:{fav_res.get('via')})！")
             else:
-                err = fav_res.get("error") or fav_res.get("message")
-                print(f"⚠️ [B站足迹] 收藏视频【{title}】未完成: {err}")
+                err_f = fav_res.get("error") or fav_res.get("message") or ""
+                diag["last_error"] = f"fav({bvid}): {err_f}"
+                diag.setdefault("fav_details", []).append({
+                    "bvid": bvid,
+                    "title": title[:30],
+                    "status": "failed",
+                    "requested_folder": folder,
+                    "actual_folder": "",
+                    "reason": str(err_f),
+                })
+                print(f"⚠️ [B站足迹] 收藏视频【{title}】未完成: {err_f}")
 
         # 5.2 真实在视频下方发表评论或楼中楼回复（score >= 62 或模型主动想评，严格拒绝模板与重复）
         comment_ok = False
@@ -827,15 +937,19 @@ async def run_single_exploration_round() -> bool:
                 print(f"🛡️ [B站足迹] 拦截到模板化或重复评论，已取消发送: “{clean_comment}”")
                 clean_comment = ""
             else:
+                diag["comment_attempts"] = int(diag.get("comment_attempts", 0)) + 1
                 reply_res = await reply_video(bvid, clean_comment, rpid=target_rpid)
                 comment_ok = reply_res.get("ok", False)
                 if comment_ok:
+                    diag["comment_success"] = int(diag.get("comment_success", 0)) + 1
                     record_bili_comment_history(clean_comment, bvid=bvid, title=title)
                     recent_comments.append({"comment": clean_comment, "bvid": bvid})
                     rep_type = f"楼中楼(rpid={target_rpid})" if target_rpid > 0 else "一级评论"
                     print(f"💬 [B站足迹] 弥酱已在视频【{title}】发表{rep_type}: “{clean_comment}”")
                 else:
-                    print(f"⚠️ [B站足迹] 视频【{title}】评论未完成: {reply_res.get('error') or reply_res.get('message')}")
+                    err_c = reply_res.get("error") or reply_res.get("message") or ""
+                    diag["last_error"] = f"comment({bvid}): {err_c}"
+                    print(f"⚠️ [B站足迹] 视频【{title}】评论未完成: {err_c}")
 
         # 5.3 真实关注神仙 UP 主 (评分>=82 且 模型判定 should_follow_up)
         followed_up = False
@@ -962,8 +1076,8 @@ async def bili_surfing_worker():
                     except Exception as e:
                         print(f"⚠️ [bili_worker] 加速重试轮次异常: {e}")
 
-                # 常规休眠：期望 ~65 分钟，范围 [35, 95] 分钟（V5.1 调整 1-γ）；成败后一律回归此周期
-                sleep_mins = _sample_truncated_gauss(65, 15, 35, 95)
+                # 常规休眠：期望 ~80 分钟，范围 [40, 125] 分钟（阶段三 3.2 冲浪间隔调优）；成败后无条件回归此周期
+                sleep_mins = _sample_truncated_gauss(80, 18, 40, 125)
                 print(f"⏱️ [B站冲浪] 本轮结束，预计 {sleep_mins:.0f} 分钟后开始下一轮冲浪～")
                 await asyncio.sleep(sleep_mins * 60)
             else:
@@ -1087,6 +1201,10 @@ async def run_bili_daily_dynamic_once(today_str: str = "") -> dict:
     )
 
     conv_id = str(uuid.uuid5(BOT_NAMESPACE, f"bili_daily_dyn_{target_date}"))
+    diag = feed_data.setdefault("diagnostics", _default_bili_diagnostics())
+    diag["dynamic_attempts"] = int(diag.get("dynamic_attempts", 0)) + 1
+    save_today_bili_feed(feed_data)
+
     try:
         await execute_agy_inference(
             chat_id_str="bili_dynamic_channel",
@@ -1098,7 +1216,10 @@ async def run_bili_daily_dynamic_once(today_str: str = "") -> dict:
             effort=BILI_AGY_EFFORT,
         )
     except Exception as e:
-        return {"ok": False, "error": f"推理生成B站动态失败: {e}"}
+        err_msg = f"推理生成B站动态失败: {e}"
+        diag["last_error"] = err_msg
+        save_today_bili_feed(feed_data)
+        return {"ok": False, "error": err_msg}
 
     transcript_path = get_transcript_path(conv_id)
     draft_text = ""
@@ -1120,7 +1241,10 @@ async def run_bili_daily_dynamic_once(today_str: str = "") -> dict:
             pass
 
     if not draft_text or len(draft_text) < 12:
-        return {"ok": False, "error": "生成的B站动态文本过短或为空"}
+        err_msg = "生成的B站动态文本过短或为空"
+        diag["last_error"] = err_msg
+        save_today_bili_feed(feed_data)
+        return {"ok": False, "error": err_msg}
 
     pub_res = await publish_bili_dynamic(
         text=draft_text,
@@ -1129,10 +1253,13 @@ async def run_bili_daily_dynamic_once(today_str: str = "") -> dict:
         credential=cred,
     )
     if pub_res.get("ok"):
+        diag["dynamic_success"] = int(diag.get("dynamic_success", 0)) + 1
+        save_today_bili_feed(feed_data)
         posted_dates[target_date] = {
             "dyn_id": pub_res.get("dyn_id"),
             "bvid": top_bvid,
             "has_image": pub_res.get("has_image", False),
+            "stage": pub_res.get("stage", ""),
             "text": draft_text,
             "ts": time.time(),
         }
@@ -1141,21 +1268,32 @@ async def run_bili_daily_dynamic_once(today_str: str = "") -> dict:
             for old_k in sorted(posted_dates.keys())[:-30]:
                 posted_dates.pop(old_k, None)
         save_bili_dynamic_history(hist)
-        print(f"📣 [B站夜间动态] 发布成功！附图={pub_res.get('has_image')} | 正文: {draft_text[:80]}...")
-        return {"ok": True, "dyn_id": pub_res.get("dyn_id"), "has_image": pub_res.get("has_image", False)}
+        print(f"📣 [B站夜间动态] 发布成功！阶段={pub_res.get('stage')} 附图={pub_res.get('has_image')} | 正文: {draft_text[:80]}...")
+        return {
+            "ok": True,
+            "dyn_id": pub_res.get("dyn_id"),
+            "stage": pub_res.get("stage", ""),
+            "has_image": pub_res.get("has_image", False),
+            "text": draft_text,
+        }
 
-    print(f"⚠️ [B站夜间动态] 发布失败: {pub_res.get('error')}")
+    err_pub = str(pub_res.get("error", "未知发布错误"))
+    diag["last_error"] = f"dynamic: {err_pub}"
+    save_today_bili_feed(feed_data)
+    print(f"⚠️ [B站夜间动态] 发布失败: {err_pub}")
     return pub_res
 
 
 async def bili_dynamic_daily_worker():
     """
-    每天 22:45 ~ 23:35（UTC+8，含每日随机漂移）自动发表一条聚焦今日 B站 冲浪收获与视频推荐的动态。
+    每天 21:45 ~ 22:30（UTC+8，错开 23:00 QQ 空间日记，避免跨 0 点丢失）自动发表一条聚焦今日 B站 冲浪收获与视频推荐的动态。
+    若发布失败，15 分钟后自动重试 1 次（最多尝试 2 次）；仍失败时向主人（MASTER_QQ）私聊发送简明报错通知。
     """
-    print("🌙 [B站夜间动态] 已上线，每日将在 22:45~23:35 档期总结今日 B站 冲浪并发布动态...")
+    print("🌙 [B站夜间动态] 已上线，每日将在 21:45~22:30 错峰档期总结今日 B站 冲浪并发布动态...")
     await asyncio.sleep(45)
 
     daily_targets = {}
+    daily_attempts = {}
     while True:
         try:
             now_utc8 = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=8)
@@ -1165,19 +1303,42 @@ async def bili_dynamic_daily_worker():
             posted_dates = hist.get("posted_dates", {})
 
             if today_str not in daily_targets:
-                # 每天在 22:45 ~ 23:35 随机漂移一个发布分钟点
-                offset_mins = random.randint(0, 50)
-                base_target = now_utc8.replace(hour=22, minute=45, second=random.randint(0, 59), microsecond=0)
+                # 每天在 21:45 ~ 22:30 随机漂移一个发布分钟点 (0~45 分钟偏移)
+                offset_mins = random.randint(0, 45)
+                base_target = now_utc8.replace(hour=21, minute=45, second=random.randint(0, 59), microsecond=0)
                 daily_targets[today_str] = base_target + datetime.timedelta(minutes=offset_mins)
+                daily_attempts[today_str] = 0
                 if len(daily_targets) > 3:
                     for old_k in list(daily_targets.keys())[:-3]:
                         daily_targets.pop(old_k, None)
+                        daily_attempts.pop(old_k, None)
 
             target_dt = daily_targets[today_str]
-            if today_str not in posted_dates:
+            attempts = daily_attempts.get(today_str, 0)
+            if today_str not in posted_dates and attempts < 2:
                 if now_utc8 >= target_dt:
-                    await run_bili_daily_dynamic_once(today_str)
-                    await asyncio.sleep(600)
+                    daily_attempts[today_str] = attempts + 1
+                    res = await run_bili_daily_dynamic_once(today_str)
+                    if res.get("ok") or res.get("skipped"):
+                        # 成功或因 0 观看跳过，今日不再重试
+                        daily_attempts[today_str] = 2
+                        await asyncio.sleep(600)
+                    else:
+                        err_detail = res.get("error") or str(res)
+                        if daily_attempts[today_str] < 2:
+                            print(f"🔁 [B站夜间动态] 首次发布未成功 ({err_detail})，将在 15 分钟后自动重试 1 次...")
+                            await asyncio.sleep(15 * 60)
+                        else:
+                            alert_msg = (
+                                f"⚠️ 主人，弥酱今晚 ({today_str}) 的 B站 总结动态连续尝试 2 次均发布失败喵：\n"
+                                f"报错摘要：{err_detail}\n"
+                                "（您可随时私聊发送【B站诊断】或【测试B站动态】排查接口状态～）"
+                            )
+                            try:
+                                await send_private_msg_raw(int(MASTER_QQ), alert_msg)
+                            except Exception as se:
+                                print(f"⚠️ [B站夜间动态] 向主人发送报错私聊失败: {se}")
+                            await asyncio.sleep(1800)
                 else:
                     wait_sec = min(1800, max(30, (target_dt - now_utc8).total_seconds()))
                     await asyncio.sleep(wait_sec)

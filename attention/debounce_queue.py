@@ -46,7 +46,8 @@ from attention.pressure import (
 )
 from social.bilibili_master_bridge import (
     handle_master_bili_login, handle_master_bili_logout,
-    handle_master_bili_history, detect_bili_link
+    handle_master_bili_history, handle_master_bili_diagnose,
+    handle_master_bili_test_dynamic, detect_bili_link
 )
 from social.bilibili_client import prefetch_bili_watch_context
 from attention.user_mute import (
@@ -148,6 +149,11 @@ CHAT_LOCKS = {}
 # 比 ACTIVE_AI_TASKS（仅在子进程存活期有效）更完整，用于思考期新消息降维。
 INFLIGHT_TURNS = set()
 
+# --- 阶段四 4.1 思考期急件待补答暂存池 ---
+# 当通道处于 INFLIGHT_TURNS 繁忙期时，若收到群聊直接 @/叫名字/引用回复弥酱，或主人私聊（且未触发打断重跑），
+# 将急件暂存于此，待当前轮次彻底结束并释放 INFLIGHT_TURNS 后自动拉起极短防抖补答，杜绝重要呼叫被吞。
+PENDING_URGENT_TURNS = {}
+
 
 def get_current_runtime_status() -> str:
     """获取当前看板状态"""
@@ -169,18 +175,50 @@ async def trigger_ai(
     is_awake_reply: bool = False,
     messages_list: list = None,
     must_reply: bool = False,
-    ephemeral_context: str = None
+    ephemeral_context: str = None,
+    was_interrupted: bool = False
 ) -> list:
-    """获取或续期长寿命 Session，组装 Prompt 并唤起大模型思考（包装层：全程登记通道繁忙状态）"""
+    """获取或续期长寿命 Session，组装 Prompt 并唤起大模型思考（包装层：全程登记通道繁忙状态，并在结束后检查待补答急件）"""
     INFLIGHT_TURNS.add(chat_id_str)
     try:
         return await _trigger_ai_impl(
             chat_id_str, group_id, sender_id, combined_message,
             is_breathe=is_breathe, is_private=is_private, is_awake_reply=is_awake_reply,
-            messages_list=messages_list, must_reply=must_reply, ephemeral_context=ephemeral_context
+            messages_list=messages_list, must_reply=must_reply, ephemeral_context=ephemeral_context,
+            was_interrupted=was_interrupted
         )
     finally:
         INFLIGHT_TURNS.discard(chat_id_str)
+        urgent = PENDING_URGENT_TURNS.pop(chat_id_str, None)
+        if urgent and urgent.get("messages"):
+            print(
+                f"📬 [思考期急件补答] 通道 {chat_id_str} 刚结束上一轮回复，检测到思考期暂存的 "
+                f"{len(urgent['messages'])} 条重要呼叫急件，立即拉起极短防抖补答！"
+            )
+            now_u = time.time()
+            followup_wait = 1.2
+            if chat_id_str in DEBOUNCE_QUEUES:
+                q = DEBOUNCE_QUEUES[chat_id_str]
+                q["messages"] = urgent["messages"] + q["messages"]
+                q["must_reply"] = True
+                q["sender_id"] = urgent.get("sender_id", q.get("sender_id"))
+                if urgent.get("ephemeral_context") and not q.get("ephemeral_context"):
+                    q["ephemeral_context"] = urgent["ephemeral_context"]
+            else:
+                DEBOUNCE_QUEUES[chat_id_str] = {
+                    "messages": list(urgent["messages"]),
+                    "group_id": urgent.get("group_id", group_id),
+                    "sender_id": urgent.get("sender_id", sender_id),
+                    "is_private": urgent.get("is_private", is_private),
+                    "is_awake_reply": True,
+                    "must_reply": True,
+                    "ephemeral_context": urgent.get("ephemeral_context"),
+                    "first_queued_time": now_u,
+                    "last_queued_time": now_u,
+                    "debounce_wait": followup_wait,
+                    "was_interrupted": False,
+                    "task": asyncio.create_task(process_debounced_queue(chat_id_str, followup_wait)),
+                }
 
 
 async def _trigger_ai_impl(
@@ -193,7 +231,8 @@ async def _trigger_ai_impl(
     is_awake_reply: bool = False,
     messages_list: list = None,
     must_reply: bool = False,
-    ephemeral_context: str = None
+    ephemeral_context: str = None,
+    was_interrupted: bool = False
 ) -> list:
     """获取或续期长寿命 Session (群聊7min/私聊10min)，组装 Prompt 并唤起大模型思考"""
     if messages_list is None:
@@ -221,7 +260,7 @@ async def _trigger_ai_impl(
         is_continuation_turn=is_continuation_turn
     )
 
-    from core.intent_router import route_message_domains, route_chat_effort
+    from core.intent_router import route_message_domains, route_chat_effort_with_reason
     merged_msg_text = "\n".join(messages_list or [combined_message])
     target_domains = await route_message_domains(
         message_text=merged_msg_text,
@@ -230,14 +269,23 @@ async def _trigger_ai_impl(
         is_breathe=is_breathe,
         chat_id_str=chat_id_str
     )
-    chat_effort = route_chat_effort(
+    soft_turns = get_group_soft_cap_turns(str(group_id)) if (not is_private and group_id) else 0
+    ctx_has_img = ("[图片#" in (combined_message or "")) or ("[CQ:image" in (combined_message or ""))
+    chat_effort, effort_rule_tag = route_chat_effort_with_reason(
         message_text=merged_msg_text,
         is_continuation_turn=is_continuation_turn,
         is_breathe=is_breathe,
         target_domains=target_domains,
         is_private=is_private,
-        sender_id=str(sender_id)
+        sender_id=str(sender_id),
+        was_interrupted=was_interrupted,
+        is_retry=False,
+        must_reply=must_reply,
+        ephemeral_context=ephemeral_context or "",
+        soft_cap_turns=soft_turns,
+        context_has_image=ctx_has_img,
     )
+    print(f"🧭 [三档思考路由] 通道 {chat_id_str} -> effort={chat_effort} | 命中规则: {effort_rule_tag}")
 
     try:
         tools_called = await execute_agy_inference(
@@ -249,6 +297,32 @@ async def _trigger_ai_impl(
             caller_id=str(sender_id),
             effort=chat_effort
         )
+
+        # 【阶段二 2.2.4 翻车自动升档熔断保险】：
+        # 在必回场景（私聊、被直接 @/唤名、戳一戳，即 is_private or must_reply）下，
+        # 若本轮 low 推理结束时未调用任何发信工具（静默未回复），自动升档至 medium 重跑 1 次！
+        if chat_effort == "low" and (is_private or must_reply) and not is_breathe:
+            state_key_chk = f"private_{sender_id}" if is_private else str(group_id)
+            from workers.post_turn_observer import check_bot_spoke_in_turn
+            spoke_low_disk, _ = check_bot_spoke_in_turn(state_key_chk, turn_start_ts)
+            spoke_low_tools = any(
+                t in (tools_called or [])
+                for t in ("send_group_msg", "send_private_msg", "send_meme", "send_local_image", "send_image_to_group", "send_image_to_private", "send_voice_msg")
+            )
+            if not spoke_low_tools and not spoke_low_disk:
+                print(
+                    f"⚠️ [翻车升档熔断] 通道 {chat_id_str} 在必回场景下使用 low 档未调用发信工具（静默未回复），"
+                    "立即自动升档至 medium 重跑 1 次！"
+                )
+                tools_called = await execute_agy_inference(
+                    chat_id_str=chat_id_str,
+                    prompt=prompt,
+                    dynamic_conv_id=dynamic_conv_id,
+                    messages_list=messages_list,
+                    target_domains=target_domains,
+                    caller_id=str(sender_id),
+                    effort="medium"
+                )
     except PromptSafetyRejectedError as e:
         tools_called = []
         print(f"🚨 [自愈拦截] 通道 {chat_id_str} 遭遇 Google 提示词安全拦截: {e}")
@@ -410,7 +484,8 @@ async def process_debounced_queue(chat_id_str: str, wait_time: float = 5.0):
                 )
                 combined_message = f"{context_part}\n\n{new_messages_part}" if context_part else new_messages_part
 
-            print(f"📦 [5s防抖结束] 通道 {chat_id_str} 消息聚合完毕 (共 {len(data['messages'])} 条) | {get_current_runtime_status()}")
+            actual_wait = float(data.get("debounce_wait", wait_time or DEBOUNCE_WAIT_TIME))
+            print(f"📦 [{actual_wait:.1f}s防抖结束] 通道 {chat_id_str} 消息聚合完毕 (共 {len(data['messages'])} 条) | {get_current_runtime_status()}")
             await trigger_ai(
                 chat_id_str,
                 data["group_id"],
@@ -420,7 +495,8 @@ async def process_debounced_queue(chat_id_str: str, wait_time: float = 5.0):
                 is_awake_reply=data["is_awake_reply"],
                 messages_list=data["messages"],
                 must_reply=data.get("must_reply", False),
-                ephemeral_context=data.get("ephemeral_context")
+                ephemeral_context=data.get("ephemeral_context"),
+                was_interrupted=bool(data.get("was_interrupted", False))
             )
 
 
@@ -433,9 +509,10 @@ async def enqueue_message(
     is_awake_reply: bool,
     must_reply: bool = False,
     ephemeral_context: str = None,
-    debounce_wait: float = DEBOUNCE_WAIT_TIME
+    debounce_wait: float = DEBOUNCE_WAIT_TIME,
+    is_urgent_call: bool = False
 ):
-    """将消息放入 5s 防抖聚合队列（新消息顺延 5s，最高硬截断 12s）"""
+    """将消息放入防抖聚合队列（支持思考期急件待补答暂存与打断标记传递）"""
     now = time.time()
     if chat_id_str in DEBOUNCE_QUEUES:
         q = DEBOUNCE_QUEUES[chat_id_str]
@@ -444,6 +521,8 @@ async def enqueue_message(
         q["sender_id"] = sender_id
         if must_reply:
             q["must_reply"] = True
+        if debounce_wait < float(q.get("debounce_wait", DEBOUNCE_WAIT_TIME)):
+            q["debounce_wait"] = debounce_wait
         if ephemeral_context:
             existing_ctx = q.get("ephemeral_context", "")
             if not existing_ctx or "特意提到了你" in ephemeral_context:
@@ -462,6 +541,7 @@ async def enqueue_message(
         print(f"📥 [防抖消息合并] 通道 {chat_id_str} 追加新消息 (当前积压: {len(q['messages'])}条) | {get_current_runtime_status()}")
     else:
         messages_list = [raw_message]
+        was_interrupted = False
 
         if is_channel_busy(chat_id_str):
             task_info = ACTIVE_AI_TASKS.get(chat_id_str)
@@ -469,16 +549,42 @@ async def enqueue_message(
                 # 私聊且本轮大模型尚未发出任何一句话：安全地中止并把新消息合并进去重新思考（最终只回答一次）
                 print(f"\n⚡ [私聊打断] 私聊通道 {chat_id_str} 侦测到新消息且本轮尚未开口！正在中止正在运行的大模型以合并重新思考...")
                 task_info["aborted"] = True
+                was_interrupted = True
                 try:
                     task_info["process"].terminate()
                 except Exception:
                     pass
                 messages_list = task_info["messages"] + messages_list
             else:
-                # 思考期消息降维：本轮已经开口（或处于组装/收尾期、群聊思考期）时，新消息只作为“下一次开口的前情背景”，
-                # 此处不创建新的防抖 Task、不拉起新的推理 call，彻底杜绝连环抢答与重复回答。
-                # （消息本身已在入口处写入 RECENT_GROUP_MSGS 滑窗与聊天归档，续轮时会作为增量上文传入。）
-                print(f"🪶 [思考期降维] 通道 {chat_id_str} 本轮回复进行中，新消息仅沉淀为下轮背景，不触发新调用。| {get_current_runtime_status()}")
+                # 【阶段四 4.1 思考期急件防漏接】：
+                # 若新到达消息属于：群聊直接 @/叫名字/引用回复弥酱 (is_urgent_call or must_reply)，
+                # 或主人私聊（且该消息未触发打断重跑，如本轮已开口或处于收尾期），
+                # 为该通道记录待补答标记并暂存这批急件，待当前轮次结束释放 INFLIGHT_TURNS 后自动拉起补答！
+                is_master_priv = is_private and (str(sender_id) == str(MASTER_QQ))
+                if is_urgent_call or (not is_private and must_reply) or is_master_priv:
+                    bucket = PENDING_URGENT_TURNS.get(chat_id_str)
+                    if bucket:
+                        bucket["messages"].append(raw_message)
+                        bucket["sender_id"] = sender_id
+                        if ephemeral_context and not bucket.get("ephemeral_context"):
+                            bucket["ephemeral_context"] = ephemeral_context
+                    else:
+                        PENDING_URGENT_TURNS[chat_id_str] = {
+                            "messages": [raw_message],
+                            "group_id": group_id,
+                            "sender_id": sender_id,
+                            "is_private": is_private,
+                            "ephemeral_context": ephemeral_context,
+                            "queued_at": now,
+                        }
+                    print(
+                        f"📌 [思考期急件登记] 通道 {chat_id_str} 正在回复中，收到重要呼叫（已暂存 "
+                        f"{len(PENDING_URGENT_TURNS[chat_id_str]['messages'])} 条待补答急件，本轮结束后即刻补答）| {get_current_runtime_status()}"
+                    )
+                    return
+
+                # 普通群聊水聊/压力消息：维持降维沉淀，防止刚回复完连环抢答
+                print(f"🪶 [思考期降维] 通道 {chat_id_str} 本轮回复进行中，普通消息仅沉淀为下轮背景，不触发新调用。| {get_current_runtime_status()}")
                 return
 
         DEBOUNCE_QUEUES[chat_id_str] = {
@@ -492,6 +598,7 @@ async def enqueue_message(
             "first_queued_time": now,
             "last_queued_time": now,
             "debounce_wait": debounce_wait,
+            "was_interrupted": was_interrupted,
             "task": None
         }
         print(f"📥 [新消息入队] 通道 {chat_id_str} (进入 {debounce_wait:.1f}s 防抖) | {get_current_runtime_status()}")
@@ -589,6 +696,16 @@ async def handle_incoming_event(message_str: str):
                     bili_history_keywords = ["b站历史", "看b站历史", "观看历史", "刷啥视频", "刷了啥", "你看过啥", "冲浪历史", "今日冲浪", "浏览记录"]
                     if is_at_bot and any(kw in raw_message.lower() for kw in bili_history_keywords):
                         await handle_master_bili_history(sender_id, group_id)
+                        return
+
+                    bili_diag_keywords = ["b站诊断", "诊断b站", "b站自检"]
+                    if is_at_bot and any(kw in raw_message.lower() for kw in bili_diag_keywords):
+                        await handle_master_bili_diagnose(sender_id, group_id)
+                        return
+
+                    bili_test_dyn_keywords = ["测试b站动态", "b站动态测试"]
+                    if is_at_bot and any(kw in raw_message.lower() for kw in bili_test_dyn_keywords):
+                        await handle_master_bili_test_dynamic(sender_id, group_id)
                         return
 
                 is_whitelisted_bot = is_bot_whitelisted(str(sender_id), nickname)
@@ -773,7 +890,8 @@ async def handle_incoming_event(message_str: str):
                         chat_id_str, group_id, sender_id, formatted_message,
                         is_private=False, is_awake_reply=is_awake_reply,
                         must_reply=must_reply, ephemeral_context=ephemeral_context,
-                        debounce_wait=debounce_wait
+                        debounce_wait=debounce_wait,
+                        is_urgent_call=bool((is_at_bot or is_called_name) and not is_whitelisted_bot)
                     )
 
             # --- 2. 处理私聊 ---
@@ -782,6 +900,16 @@ async def handle_incoming_event(message_str: str):
                 chat_id_str = f"private_{sender_id}"
 
                 if str(sender_id) == str(MASTER_QQ):
+                    bili_diag_keywords = ["b站诊断", "诊断b站", "b站自检"]
+                    if any(kw in raw_message.lower() for kw in bili_diag_keywords):
+                        await handle_master_bili_diagnose(sender_id, None)
+                        return
+
+                    bili_test_dyn_keywords = ["测试b站动态", "b站动态测试"]
+                    if any(kw in raw_message.lower() for kw in bili_test_dyn_keywords):
+                        await handle_master_bili_test_dynamic(sender_id, None)
+                        return
+
                     bili_login_keywords = ["登录b站", "b站登录", "b站扫码", "绑定b站", "b站状态", "b站账号", "检查b站"]
                     if any(kw in raw_message.lower() for kw in bili_login_keywords):
                         await handle_master_bili_login(sender_id, None)

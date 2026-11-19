@@ -252,14 +252,13 @@ async def consolidate_session_memory(session_snapshot: dict):
             f"{checklist_block}"
             f"【本场会话实录（共 {len(turns_log)} 轮）】：\n{full_dialogue_text}\n\n"
             "【整理规则】：\n"
-            "1. mood (情绪变化 — 请大胆给出鲜明灵动的评分，拒绝保守平庸！)：\n"
+            "1. mood (情绪变化 — 鲜明灵动且遵守防通胀源头限流铁律！)：\n"
             "   - mood_delta: 整数 -18 到 +18（聊得开心/被哄/愉快给 +6 ~ +14，超开心给 +15 ~ +18；委屈/被冷落/不快给 -6 ~ -18）。\n"
-            "   - dims: 7个微观维度变化量，范围 -45 到 +65！打分标尺：\n"
-            "     * 轻度日常触发：+18 ~ +28\n"
-            "     * 明显情绪波动（如开心雀跃、被夸得意傲娇、亲昵害羞、小委屈或吃味）：+35 ~ +52\n"
-            "     * 强烈情绪峰值（如极度甜蜜害羞、超得意、强烈吃醋或心疼）：+55 ~ +65\n"
-            "     * 对应负向消退或平复可给 -15 ~ -45。\n"
-            "   - reason: 若有情绪触动，用【第一人称过去式】写一句生动的话总结心情来历，平淡闲聊填 \"\"。\n"
+            "   - dims: 7个微观维度变化量，单维范围 -35 到 +35！\n"
+            "     * 【源头限流硬约束】：单次结算**最多只允许给 1 ~ 3 个维度填非 0 值**，其余未触发的维度必须严格填 0，严禁胡乱给四五个维度雨露均沾！\n"
+            "     * 【calm（踏实/安心）专属约束】：严禁在普通开心闲聊、打趣或热闹吐槽时顺手给 calm 加分！仅在从担心/委屈/不安中被温柔安抚下来、或深夜安静温馨陪伴时才给予 calm 正向增量。\n"
+            "     * 打分标尺：轻度触发 +10 ~ +18；明显情绪波动（开心雀跃、被夸得意傲娇、亲昵害羞、小委屈或吃味）+20 ~ +28；强烈情绪峰值 +29 ~ +35；对应消退或平复给 -10 ~ -35。\n"
+            "   - reason: 若有情绪触动，用【第一人称过去式】写一句极简短句总结心情起因（18字内），平淡闲聊填 \"\"。\n"
             "2. affection (按每位实质互动对象独立结算，键为对应QQ号)：\n"
             "   - 【峰值优先原则（防长会话稀释）】：若某人在本场多轮对话中出现过哪怕一轮高光时刻或强烈情绪触动，**必须按整场最高峰的那一轮打分**，严禁被前后的日常寒暄拉低平均分！\n"
             "   - mood_resonance 范围 -15.0 ~ +8.0，五档明确标尺：\n"
@@ -328,15 +327,17 @@ async def consolidate_session_memory(session_snapshot: dict):
         if not parsed:
             return
 
-        # 1. 更新情绪状态
+        # 1. 更新情绪状态（锁 4：最多允许变动 3 个情绪维度，按绝对值排序仅保留前 3 个）
         mood_blk = parsed.get("mood", {})
         if isinstance(mood_blk, dict):
+            from social.mood_manager import filter_top_k_dim_deltas
             m_delta = float(mood_blk.get("mood_delta", 0.0) or 0.0)
-            d_deltas = mood_blk.get("dims", {}) or {}
+            raw_d_deltas = mood_blk.get("dims", {}) or {}
+            d_deltas = filter_top_k_dim_deltas(raw_d_deltas, max_dims=3)
             m_reason = str(mood_blk.get("reason", "") or "").strip()
             new_mood_state = apply_mood_update(m_delta, d_deltas, m_reason, scene_str)
             if m_reason:
-                print(f"💭 [会话情绪沉淀] 基调={new_mood_state['mood']:.1f} | 来历: {m_reason}")
+                print(f"💭 [会话情绪沉淀] 基调={new_mood_state['mood']:.1f} | 变动维度={list(d_deltas.keys())} | 来历: {m_reason}")
 
         # 2. 更新好感共鸣与定级（支持多参与者逐人结算，并兼容旧版单对象输出）
         aff_blk = parsed.get("affection", {})

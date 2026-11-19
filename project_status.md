@@ -13,8 +13,23 @@
 >    - **【绝对红线】严禁打包任何 `.json` 数据、状态与配置文件**（如 `allowed_groups.json`, `user_profiles.json`, `qzone_history.json`, `chat_state.json`, `bili_credential.json` 等），防止远端服务器解压时意外覆写白名单和运行状态数据；
 >    - **【绝对红线】严禁打包 Markdown 文档**（如 `project_status.md`, `plan.md` 等），避免向生产服务器冗余上传文档。
 
-> **最后更新时间**: 2026年11月 (星见弥 V5.0：B 站字幕锚定多样性评价/7 大固定分类收藏/23点图文总结动态/链接分享 + QQ 空间每日三档巡检/特关 WebUI 与自加体系/空间记忆隔离与特关私聊关怀/日记表情包配图)
+> **最后更新时间**: 2026年11月 (星见弥 V5.2：新版 E1 四把防通胀情绪锁与 M2 437 条静态全复合词库 + 前台 `low` 强度解禁与三档可靠路由/必回熔断升档 + B 站 5 粗筛/单精看/80min 冲浪调优、收藏双轨+选项 B 默认夹兜底、三段降级动态与 0-LLM 主人诊断自检 + 思考期急件防漏接)
 > **当前状态**: 
+> - **V5.2 情绪引擎动力学重构（新版 E1 四把物理锁）与 M2 437 条静态全复合词库 (`social/mood_manager.py`, `social/mood_lexicon.py`, `workers/post_turn_observer.py`)**：
+>   - **保留 7 维结构与统一五档梯度**：100% 兼容 `happy / calm / sweet / proud / worry / sulky / jealous` 及 WebUI 雷达图与多情感语音，统一五档阈值（0档静默 `0~29`、1档轻度 `30~54`、2档中度 `55~69`、3档强烈 `70~89`、4档爆表 `90~100`）；
+>   - **防通胀四把物理锁（新版 E1 自然演化）**：① **五段高位阻力**（单维原始冲量收紧至 `[-35, +35]`，正向增长按 `1.00x / 0.70x / 0.45x / 0.33x / 0.22x` 分段平滑积分）；② **温和对立压制与 `1 : 0.7` 跨极共存保护**（暖/冷色系对立柔和回压 `0.32x`，绝不一刀清零，允许对立侧以主导峰值的 `0.7` 倍共存，自然演绎“嘴硬吃醋但心里甜丝丝”等跨极复合情绪）；③ **两段式退潮衰减**（`>= 70` 半衰期缩短至 `22.5` 分钟，`< 70` 维持 `55` 分钟，跨 `70` 边界精确分段指数扣减）；④ **观察者源头限流**（Prompt 与解析层双重约束单次最多变动 3 个维度，严控 `calm` 仅在安抚/安静陪伴时加分，不对第 3 名及以后激活维度做硬截断）；
+>   - **M2 437 条静态全复合词库 (`social/mood_lexicon.py`) 与极简折中派单行注入**：纯 `.py` 静态 $O(1)$ 查表（0维宏观 `mood` 10档 + 1维 28条 + 2维 21对×9格=189条 + 3+维 35组×6档=210条 = **437 条**，每条 `<= 10` 字，零运行时拼接）；彻底删除多行心理旁白与卸力引导，改为单行 `【当前心情】<映射词>（<1h内极短起因>）` 或 `【当前心情】<映射词>`；
+> - **V5.2 前台 `low` 强度解禁与三档可靠路由 (`config.py`, `core/intent_router.py`, `core/agy_runner.py`, `attention/debounce_queue.py`)**：
+>   - **三档优先级判定矩阵 (`route_chat_effort_with_reason`)**：解禁前台 `low` 档（映射至 `gemini-4-hydrogen-low`）。优先级 1 硬护栏（被打断重跑 `was_interrupted`、非纯聊天工具域 `bili/group_admin/system_admin/game`/深度 `memory`、带图/链接/`>=45`字长文/复杂提问/情感安慰/虚实探讨、自愈重试）严禁 `low`；优先级 2 定向 `low`（群聊话题压力无图无复杂工具出场、普通群冷场冒泡【豁免私聊勾引主人/挚友及带 `pending_thoughts`/B站手账分享保持 `medium`】、好感度 `< 500` 朋友以下私聊首轮未唤名/无深思内容起手）；优先级 3 常规基准（默认 `medium`，戳一戳反击、`<=22` 字纯文字极简接茬/轻搭腔、群聊高轮次自然收尾降为 `low`）；
+>   - **必回场景翻车自动升档熔断**：在私聊、被直接 `@`/唤名、戳一戳等必回场景下，若 `low` 推理结束未调用任何发信工具（静默未回复），自动升档至 `medium` 重跑 1 次；
+> - **V5.2 B 站冲浪节奏调优、收藏双轨 + 选项 B 默认夹兜底、三段式降级动态与 0-LLM 主人诊断 (`workers/bili_worker.py`, `social/bilibili_client.py`, `social/bilibili_master_bridge.py`, `attention/debounce_queue.py`)**：
+>   - **5 候选粗筛 + 单视频精看 + 三段字幕精华 + 80min 节律**：每轮仅粗筛前 5 个未看候选，每次只精看 **1 个**最优质视频（`medium` + `target_domains=["none"]`）；超长字幕按“开头+中段+结尾”截取精华（严格控制在 `3000~3500` 字内）；白天常规休眠期望调整为 **80 分钟**（`_sample_truncated_gauss(80, 18, 40, 125)`）；
+>   - **收藏接口双轨加固 + 选项 B 默认夹极端兜底 + 门槛校准**：拉取收藏夹列表与执行 `favorite_video` 均采用“优先 `bilibili-api-python`，失败自动回退原生 `httpx` (`trust_env=False`) 直连 `/x/v3/fav/folder/created/list-all` 与 `POST /x/v3/fav/resource/deal`”双轨机制；保持 `allow_auto_create=False`，按精确→模糊/关键词→选项 B 默认收藏夹极端兜底（记录未命中原因至诊断账本）；Prompt 解耦评论口吻与客观打分，收藏触发线校准为 `((score >= 72) or (should_favorite and score >= 68)) and attitude != "吐槽踩雷"`；
+>   - **防盗链预拉封面 + 三段降级动态 + 21:45~22:30 错峰与重试报警**：使用 `httpx` (`trust_env=False`, `Referer: https://www.bilibili.com/`) 预下载封面字节至内存；按“首选 `bilibili-api` 内存图文 → 降级 1 原生 `httpx` 上传 `upload_bfs` 图床 + Web 动态创建 → 降级 2 带完整视频直链的纯文字动态”三段降级；每日发布窗口前移至 **`21:45 ~ 22:30`**（错开 23:00 空间说说），失败 15 分钟后自动重试 1 次，连败 2 次私聊向主人报警；
+>   - **轻量诊断账本与主人 0-LLM 快捷自检指令**：在 `today_bili_feed.json` 内维护当日 `diagnostics` 账本；主人发送 **`B站诊断`** 即刻私聊回报登录态、收藏夹列表、今日观看评分明细、收藏命中/兜底/失败明细与最近报错；发送 **`测试B站动态`** 即刻触发真实动态发布或 0 观看无污染图床 (`upload_bfs`) 连通性探针校验；
+> - **V5.2 思考期急件防漏接、防抖日志动态秒数对齐与脑区路径核查 (`attention/debounce_queue.py`, `config.py`)**：
+>   - **思考期急件待补答 (`PENDING_URGENT_TURNS`)**：维持 `INFLIGHT_TURNS` 期间对普通群聊水聊的降维沉淀；当繁忙期收到群聊直接 `@`/叫名字/引用回复弥酱或主人私聊（未触发打断重跑）时，登记入 `PENDING_URGENT_TURNS` 暂存，待当前轮次结束释放 `INFLIGHT_TURNS` 后自动拉起 `1.2s` 极短防抖补答；
+>   - **防抖日志与脑区路径对齐**：出队日志动态打印实际防抖秒数（如 `[2.2s防抖结束]` / `[4.8s防抖结束]`）；核查确认 `_get_candidate_brain_roots()` 保持生产环境真实宿主路径 `("/home/your_user", "/root")`；
 > - **目标 3 B 站深度互动全面升级 (`social/bilibili_client.py`, `workers/bili_worker.py`, `bot_daemon.py`, `config.py`)**：
 >   - **3-1 字幕锚定真实短评与防复读 (`workers/bili_worker.py`)**：清除 `eval_prompt` JSON 示例非法 `//` 注释并封装 `parse_bili_eval_json()`，严格拦截解析失败与模板话术（`“挺好玩的，学到了点新东西～”`），不再以默认分/默认句式兜底点赞收藏发评；要求模型引用字幕 (`trimmed_subs`) 或热评具体细节并区分 `attitude`（`喜欢安利`/`普通无感`/`吐槽踩雷`），扩充 `COMMENT_STYLES` 至 7 类口吻（考据/吐槽/无感/自嘲/留钩/楼中楼/安利），持久化最近 40 条评论 (`bili_comment_history.json`) 注入最新 8 条防撞车；
 >   - **3-2 23 点档 B 站专属夜间总结动态 (`social/bilibili_client.py` `publish_bili_dynamic`, `workers/bili_worker.py` `bili_dynamic_daily_worker`)**：每日 `22:45~23:35` 随机窗口聚焦当天 B 站冲浪足迹发布纯 B 站视角动态（当天零观看则跳过，不搬运 QQ 群日常；持久化 `bili_dynamic_history.json` 防重启重复），附带最高分精选视频封面图 (`Picture.load_url`) 与 `https://www.bilibili.com/video/{bvid}` 链接（图床失败自动降级纯文字）；
@@ -65,7 +80,7 @@
      - **常驻内存基线**: 基础常驻内存约 39MB RSS（极度轻量，单台 2C2G 运行毫无压力）
    - **本地开发调试环境**:
      - **操作系统**: Windows 11
-     - **Python 解释器**: Anaconda3 (`C:\path\to\python.exe`, **Python 3.13.5**)
+     - **Python 解释器**: Anaconda3 (`D:\Anaconda3\python.exe`, **Python 3.13.5**)
    - **核心依赖清单 (`requirements.txt`)**:
      - `mcp`：FastMCP 协议核心框架，支撑智能体与外部工具的标准 RPC 通讯
      - `httpx`：异步高性能 HTTP 客户端（处理 OneBot API 交互与 B 站数据无头拉取）
@@ -862,7 +877,7 @@
   - **异地双机通信与 Tailscale IP 访问**：在 Linux 边缘主机（联想 IdeaPad，专网 IP `YOUR_EDGE_NODE_IP`）启动后，笔记本客户端或局域网设备通过 `http://YOUR_EDGE_NODE_IP:8088` 即可无感直接访问交互。
 
 ### 40. GPT-SoVITS-v5 九维多情感语音 MCP 引擎、v5turbo 潜空间 ge 风格融合与深夜陪伴模式 (Multi-Emotion TTS Engine, Latent ge Style Blending & Late-Night Whisper Mode v4.8)
-- **底层 GPU 算力解放与百倍推理提速 (`C:\path\to\GPT-SoVITS-v5`)**：
+- **底层 GPU 算力解放与百倍推理提速 (`D:\GPT-TTS\GPT-SoVITS-v5`)**：
   - **修复 CPU-Only PyTorch 陷阱与 cuDNN Autotune 36 秒阻塞**：将推理环境升级为 `torch==2.11.0+cu128` (`fp16` + `TF32` 开启)，并在 `GPT_SoVITS/Accel/PyTorch/__init__.py` 与 `TTS.py` 中禁用 `torch.backends.cudnn.benchmark = False`（根除 1D 变长卷积在每次不同句长下耗时 15~36 秒重跑 cuDNN 启发式搜索的致命卡顿），同时遵循 `TORCH_NUM_THREADS=2` 限制 CPU 线程争抢；
   - **显存 16 槽位 LRU 缓存与启动预热 (`TTS.py`, `api_v2.py`)**：为全部 8 段参考音频的 HuBERT 语义码、声谱图、BERT 文本特征及 Vocoder 梅尔特征建立显存常驻 LRU 缓存，并在 `api_v2.py` 启动时预热 CUDA Graph 与全部情绪参考，使单句合成耗时从 **39.2 秒** 降至 **1.06 ~ 1.66 秒**（提速约 30 倍），显存占用稳定在 **~3.4 GB**。
 - **方案 3-A + 接口 α：`v5turbo` 潜空间 `ge` 风格向量双情感融合 (`TTS.py`, `tools/voice_tools.py`)**：
@@ -905,6 +920,36 @@
   - **单轮进程超时动态放宽 (`600s -> 1200s`)**：通过 `AGY_VOICE_MARKER_FILE` 实时标记与 `transcript_stream.py` 双路探测，一旦某轮调用 `send_voice_msg`，`_wait_process_with_voice_timeout` 自动将该轮进程强杀（斩首）上限从 10 分钟放宽至 20 分钟（下一轮自动恢复 10 分钟）。
   - **会话无对话存活寿命单次延长 (`420s/600s -> 1200s`)**：无论私聊（默认 10 分钟）还是群聊（默认 7 分钟），当且仅当该轮触发了 `send_voice_msg` 时，在 `record_session_turn_completed` 将本轮无对话保活寿命延长至 20 分钟；一旦开启后续新一轮对话且未再次触发语音，立即自动恢复各自默认寿命（7 分钟 / 10 分钟）。
 
+### 43. V5.2 情绪引擎新版 E1 动力学与 M2 437条静态全复合词库、前台 `low` 三档可靠路由、B站双轨收藏/三段动态/0-LLM诊断与思考期急件防漏接 (Mood Engine E1 & M2 437 Lexicon, Three-Tier Effort Routing, Bili Dual-Track & In-flight Urgent Rescue v5.2)
+- **阶段一：情绪引擎重构（新版 E1 四把防通胀物理锁）与 M2 437 条静态全复合词库 (`social/mood_manager.py`, `social/mood_lexicon.py`, `workers/post_turn_observer.py`, `attention/context_builder.py`)**：
+  1. **保留 7 维结构与五档量化梯度**：100% 保留 `happy / calm / sweet / proud / worry / sulky / jealous` 7 维结构，与 WebUI 7 维雷达图及 `tools/voice_tools.py` 复合情感语音无缝兼容；统一五档阈值梯度（0档静默 `0~29`、1档轻度 `30~54`、2档中度 `55~69`、3档强烈 `70~89`、4档爆表 `90~100`）。
+  2. **底层防通胀四把物理锁（新版 E1 自然演化）**：
+     - **锁 1 · 五段高位阻力（S 型边际递减）**：单次单维原始冲量上限收紧至 `[-35, +35]`；正向增长按所处档位施加分段阻力系数（`0~29: 1.00x`、`30~54: 0.70x`、`55~69: 0.45x`、`70~89: 0.33x`、`90~100: 0.22x`），跨档增长按 `integrate_dim_growth()` 分段平滑积分计算；
+     - **锁 2 · 温和对立压制（最高兼容 `1 : 0.7` 跨极复合）**：划分暖色系（`happy`, `calm`, `sweet`, `proud`）与冷色系（`worry`, `sulky`, `jealous`）。一侧正向有效增长时对对立侧柔和回压（`0.32x`），绝不一刀清零；允许对立侧最高以主导侧峰值的 `0.7` 倍共存（超出 `0.7 × 主导峰值` 时柔缓回压至该边界内，原本在 `0.7` 倍以内仅极轻微压制或保留），自然呈现“嘴硬吃醋但心里甜丝丝”“破涕为笑还带点委屈”等猫娘跨极复合情绪；
+     - **锁 3 · 两段式退潮衰减 (`decay_single_dim_two_stage`)**：数值 `>= 70` 半衰期缩短至 `22.5 分钟`（`20~25min`），`< 70` 半衰期维持 `55 分钟`（`50~60min`），跨 `70` 边界按分段指数公式精确扣减时间；
+     - **锁 4 · 观察者源头限流（新版 E1 不做硬截断）**：在 `workers/post_turn_observer.py` 提示词与 `filter_top_k_dim_deltas()` 代码层双重约束单次最多变动 3 个情绪维度（超出时按绝对值排序仅保留前 3 个）；严控 `calm` 仅在从担心/委屈中被安抚下来或安静陪伴时加分；不对排名第 3 名及以后的已激活维度做人为归零或额外加速衰减。
+  3. **M2 高区分度静态全复合词库 (`social/mood_lexicon.py`，共 437 条纯静态 $O(1)$ 查表）**：
+     - 0 维激活（全部 `< 30`，走宏观 `mood` `0~100` 每 10 点分 10 档）= **10 条**；
+     - 1 维激活（仅 1 维 `>= 30`，7 维 × 4 激活档）= **28 条**；
+     - 2 维激活（2 维 `>= 30`，全 $C_7^2 = 21$ 对 × `3×3 = 9` 格 `L/M/H × L/M/H` 严格区分主次轻重，如 `得意(H)+甜蜜(L) -> 傲娇暗爽`、`甜蜜(H)+得意(L) -> 甜丝丝有点小骄傲`、`甜蜜(H)+吃醋(M) -> 又甜又护食`）= **189 条**；
+     - 3+ 维激活（取 Top-3 查全 $C_7^3 = 35$ 组 × 6 档 `3种第一主角 × 轻中M/强爆H 2档`）= **210 条**；
+     - 合计 `10 + 28 + 189 + 210 = 437 条`，零运行时机械拼接，全部 `<= 10` 个汉字。
+  4. **极简折中派单行 Prompt 注入**：删除多行心理旁白与“不是非这样不可”等卸力引导，存在 `last_reason` 且距离记录时间 `<= 3600s` 时注入 `【当前心情】<映射词>（<极短起因>）`，否则注入 `【当前心情】<映射词>`。
+- **阶段二：解禁前台 `low` 强度与三档可靠路由 (`config.py`, `core/intent_router.py`, `core/agy_runner.py`, `attention/debounce_queue.py`)**：
+  1. **三档路由判定矩阵 (`route_chat_effort_with_reason`)**：解禁前台 `low` 档（映射至 `gemini-4-hydrogen-low`）。
+     - **优先级 1（绝对禁 `low` 硬护栏）**：发生打断重跑 (`was_interrupted=True`)、命中非纯聊天工具域 (`bili/group_admin/system_admin/game`/深度 `memory`)、含图片锚点/链接/`>=45`字长文/复杂提问/技术代码/情感安慰/虚实探讨、自愈重试回合 → 至少 `medium` 或 `high`；
+     - **优先级 2（定向 `low` 规则）**：群聊话题压力无图无复杂工具出场一律 `low`；自由冒泡中普通群冷场/日常随笔一律 `low`（明确豁免：① 私聊主动勾引主人或挚友；② 携带 `pending_thoughts` 或近期 B 站手账分享保持 `medium`）；好感度 `< 500`（朋友以下，严格不含朋友）私聊首轮默认 `low` 起手（唤名或提问/长句/工具/情感升至 `medium`/`high`，后续轮次回归常规基准）；
+     - **优先级 3（常规对话基准）**：以 `medium` 为默认基准；纯文字极简互动（`<=22` 字无问号无敏感工具词、戳一戳反击、早晚安/哈哈/草等轻搭腔、群聊高轮次自然收尾）降为 `low`；复杂深聊升为 `high`。
+  2. **翻车自动升档熔断保险**：在必回场景（私聊、被直接 `@`/唤名、戳一戳）下，若某轮 `low` 推理结束未调用任何发信工具（静默未回复），自动升档至 `medium` 重跑 1 次，并在日志中清晰打印路由出的 `effort` 与命中规则标签。
+- **阶段三：B 站冲浪节奏调优、收藏双轨兜底、三段降级动态与诊断自检 (`workers/bili_worker.py`, `social/bilibili_client.py`, `social/bilibili_master_bridge.py`, `attention/debounce_queue.py`)**：
+  1. **5 候选粗筛 / 单视频精看 / 三段字幕精华 / 80min 间隔**：每轮搜索仅粗筛前 5 个未看候选，每次只精看 **1 个**最优质视频（`medium` + `target_domains=["none"]`）；超长字幕通过 `extract_three_segment_subtitles()` 截取“开头+中段+结尾”精华（总长控制在 `3000~3500` 字内）；白天正常冲浪休眠期望调整为 **80 分钟**（`_sample_truncated_gauss(80, 18, 40, 125)`，失败单次加速重试后无条件回归 80 分钟期望）。
+  2. **收藏双轨加固 + 选项 B 默认夹极端兜底 + 门槛校准**：`get_user_favorite_folders` 与 `favorite_video` 均优先调用 `bilibili-api-python`，失败自动回退原生 `httpx` (`trust_env=False`) 直连 Web API (`/x/v3/fav/folder/created/list-all` 与 `POST /x/v3/fav/resource/deal`)；保持 `allow_auto_create=False`，按精确→模糊/关键词→选项 B 默认收藏夹极端兜底；评估 Prompt 明确解耦评论口吻与打分，收藏触发线校准为 `((score >= 72) or (should_favorite and score >= 68)) and attitude != "吐槽踩雷"`。
+  3. **三段式降级动态发布 + 21:45~22:30 错峰 + 自动重试报警**：封面图使用 `httpx` (`trust_env=False`, `Referer: https://www.bilibili.com/`) 预拉取二进制到内存防 403 防盗链；`publish_bili_dynamic` 按“① `bilibili-api-python` 内存图片图文 → ② 原生 `httpx` 上传 `upload_bfs` 图床 + Web 动态创建 → ③ 带完整 `https://www.bilibili.com/video/{bvid}` 链接的纯文字动态”三段降级；每日窗口调整为 **`21:45 ~ 22:30`**，失败 15 分钟后自动重试 1 次（最多 2 次），仍失败时私聊通知主人。
+  4. **诊断账本与主人零 LLM 自检指令**：在 `today_bili_feed.json` 记录当日观看数、JSON 成功/失败数、评分与态度、点赞/收藏/评论/动态尝试与成功数及最近报错；支持主人专属 0-LLM 指令 **`B站诊断`** 与 **`测试B站动态`**（当天 0 观看时通过 `probe_bili_dynamic_connectivity()` 执行无污染登录态、CSRF 与 `upload_bfs` 图床连通性探针校验）。
+- **阶段四：思考期急件防漏接、防抖日志对齐与脑区路径核查 (`attention/debounce_queue.py`, `config.py`)**：
+  - 维持 `INFLIGHT_TURNS` 繁忙期内对普通群聊水聊的降维沉淀；新增 `PENDING_URGENT_TURNS` 急件待补答池，当繁忙期收到群聊直接 `@`/叫名字/引用回复弥酱或主人私聊（未触发打断重跑）时暂存急件，待当前轮次结束释放 `INFLIGHT_TURNS` 后自动拉起 `1.2s` 极短防抖补答；
+  - 修复出队日志硬编码 `[5s防抖结束]` 为动态打印实际防抖秒数（如 `[2.2s防抖结束]` / `[4.8s防抖结束]`）；核查确认 `config.py` 中 `_get_candidate_brain_roots()` 为真实生产宿主路径 `("/home/your_user", "/root")`。
+
 
 ---
 
@@ -913,7 +958,7 @@
   - 现实生活作息锚定 (Circadian Rhythm)：结合早晨起床、午饭摸鱼、下班打卡等时段自发随笔。
   - 迟发共鸣与延时回响 (Delayed Echo)：冷场后以“刚爬楼看完”的姿态针对前段热点延时吐槽。
   - 自主生活碎片库 (Life Snippets)：主动向群内抛出打游戏战绩、抽卡体验等话题引导互动。
-- **多平台拓展**: 既然已用 `GeminiAgyQQAgent` 作为核心代号，未来不仅限于 QQ，该 Daemon 思路可直接复用于微信、Discord 的桥接。
+- **多平台拓展**: 既然已用 `SeekaiGeminiqqAgent` 作为核心代号，未来不仅限于 QQ，该 Daemon 思路可直接复用于微信、Discord 的桥接。
 - **Subagent 异步深思双轨制**: 针对耗时较长（>15秒）的跨天长文本总结与网络分析，让主智能体秒级应答“等我翻翻记录喵”，后台调度 Subagent 异步产出后二次推送，维持聊天即时响应。
 
 

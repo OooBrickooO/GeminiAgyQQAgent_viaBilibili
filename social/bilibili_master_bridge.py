@@ -61,6 +61,151 @@ async def handle_master_bili_history(sender_id: int, group_id: int = None) -> bo
     return True
 
 
+async def handle_master_bili_diagnose(sender_id: int, group_id: int = None) -> bool:
+    """
+    【阶段三 3.5 主人零 LLM 快捷指令：B站诊断】
+    仅认 MASTER_QQ，底层直跑 0 LLM 消耗，立即私聊回报主人：
+    - 当前登录态
+    - 账号实际读取到的所有收藏夹名称列表
+    - 今日观看数与评分明细
+    - 收藏命中/兜底/失败明细
+    - 最近报错原因
+    """
+    if str(sender_id) != str(MASTER_QQ):
+        return False
+
+    from social.bilibili_client import get_user_favorite_folders
+    from workers.bili_worker import load_today_bili_feed
+
+    check_res = await verify_bili_credential()
+    if check_res.get("logged_in"):
+        login_line = f"✅ 已登录 ({check_res.get('name', '未知')} | UID: {check_res.get('uid', '')})"
+    else:
+        login_line = f"❌ 未登录或凭证已失效 ({check_res.get('message', '无有效凭证')})"
+
+    folder_res = await get_user_favorite_folders()
+    if folder_res.get("ok"):
+        folders = folder_res.get("folders", [])
+        folder_names = [f"{f.get('title')}({f.get('media_count', 0)})" for f in folders if f.get("title")]
+        folder_line = f"共 {len(folder_names)} 个 [通道:{folder_res.get('via', 'api')}]: " + ("、".join(folder_names) if folder_names else "(空)")
+    else:
+        folder_line = f"⚠️ 读取失败: {folder_res.get('error', '未知错误')}"
+
+    feed = load_today_bili_feed()
+    diag = feed.get("diagnostics", {}) or {}
+    watched = feed.get("watched", []) or []
+
+    w_count = max(int(diag.get("watched_count", 0)), len(watched))
+    j_ok = int(diag.get("json_success_count", len(watched)))
+    j_fail = int(diag.get("json_fail_count", 0))
+
+    eval_lines = []
+    eval_list = diag.get("evaluations") or [
+        {"bvid": w.get("bvid"), "title": w.get("title", "")[:30], "score": w.get("score"), "attitude": w.get("attitude")}
+        for w in watched
+    ]
+    for idx, ev in enumerate(eval_list[-8:], 1):
+        eval_lines.append(
+            f"  {idx}. [{ev.get('bvid')}] 《{ev.get('title', '')}》 -> {ev.get('score')}分 ({ev.get('attitude')})"
+        )
+    eval_block = "\n".join(eval_lines) if eval_lines else "  (今日暂无观看评分记录)"
+
+    fav_att = int(diag.get("fav_attempts", 0))
+    fav_ok = int(diag.get("fav_success", 0))
+    fav_fb = int(diag.get("fav_fallback_default", 0))
+    fav_details = diag.get("fav_details") or []
+    fav_lines = []
+    for fd in fav_details[-6:]:
+        st = fd.get("status", "")
+        st_tag = "🎯命中" if st == "hit" else ("🛡️默认夹兜底" if st == "fallback_default" else "❌失败")
+        fav_lines.append(
+            f"  - [{fd.get('bvid')}] {st_tag}: 目标【{fd.get('requested_folder')}】-> 实际【{fd.get('actual_folder') or '无'}】"
+            + (f" ({fd.get('reason')})" if fd.get("reason") else "")
+        )
+    fav_block = "\n".join(fav_lines) if fav_lines else "  (今日暂无收藏操作明细)"
+
+    like_stat = f"{diag.get('like_success', 0)}/{diag.get('like_attempts', 0)}"
+    cmt_stat = f"{diag.get('comment_success', 0)}/{diag.get('comment_attempts', 0)}"
+    dyn_stat = f"{diag.get('dynamic_success', 0)}/{diag.get('dynamic_attempts', 0)}"
+    last_err = diag.get("last_error") or "无"
+
+    report = (
+        f"🩺 【星见弥 B站 冲浪诊断自检报告 ({feed.get('date')})】\n"
+        f"1. 登录状态：{login_line}\n"
+        f"2. 账号收藏夹列表：{folder_line}\n"
+        f"3. 今日冲浪概览：观看 {w_count} 个 | JSON解析 成功:{j_ok} / 失败:{j_fail}\n"
+        f"4. 互动统计：点赞({like_stat}) | 收藏({fav_ok}/{fav_att}, 默认夹兜底:{fav_fb}) | 评论({cmt_stat}) | 动态({dyn_stat})\n"
+        f"5. 今日评分明细：\n{eval_block}\n"
+        f"6. 收藏命中/兜底/失败明细：\n{fav_block}\n"
+        f"7. 最近一次接口报错：{last_err}"
+    )
+
+    await send_private_msg_raw(int(MASTER_QQ), report)
+    if group_id:
+        await send_group_msg_raw(int(group_id), "主人，弥酱已将今日 B站 诊断自检详细报告私聊发给您啦喵～")
+    return True
+
+
+async def handle_master_bili_test_dynamic(sender_id: int, group_id: int = None) -> bool:
+    """
+    【阶段三 3.5 主人零 LLM 快捷指令：测试B站动态】
+    仅认 MASTER_QQ：
+    - 若当天已有观看记录且尚未发动态，则触发一次真实每日动态发布 (`run_bili_daily_dynamic_once`)；
+    - 若当天 0 观看记录（或今日已发过动态），则仅校验登录态、动态图床 (`upload_bfs`) 与接口连通性（不向主页发空白垃圾动态），并私聊反馈回执。
+    """
+    if str(sender_id) != str(MASTER_QQ):
+        return False
+
+    from workers.bili_worker import load_today_bili_feed, run_bili_daily_dynamic_once
+    from social.bilibili_client import probe_bili_dynamic_connectivity
+
+    feed = load_today_bili_feed()
+    watched = feed.get("watched") or []
+
+    if watched:
+        res = await run_bili_daily_dynamic_once()
+        if res.get("ok") and not res.get("skipped"):
+            msg = (
+                f"✅ 【测试B站动态 · 真实发布成功】\n"
+                f"- 动态ID: {res.get('dyn_id')}\n"
+                f"- 发布通道: {res.get('stage', 'default')}\n"
+                f"- 是否含配图: {res.get('has_image')}\n"
+                f"- 动态摘要: {str(res.get('text', ''))[:90]}..."
+            )
+        elif res.get("skipped") and res.get("reason") == "already_posted_today":
+            probe = await probe_bili_dynamic_connectivity()
+            msg = (
+                f"ℹ️ 今日 B站 总结动态此前已发布过啦！已为您执行无污染图床与接口连通性校验：\n"
+                f"- 连通性状态: {'✅ 正常' if probe.get('ok') else '❌ 异常'}\n"
+                f"- 账号: {probe.get('account_name')} (UID: {probe.get('account_uid')})\n"
+                f"- 动态图床(upload_bfs)校验: {'✅ 成功' if probe.get('bfs_upload_ok') else '❌ 失败'}\n"
+                f"- 详情/报错: {probe.get('bfs_detail') or probe.get('error') or '无'}"
+            )
+        else:
+            msg = f"❌ 【测试B站动态 · 发布失败】\n完整报错原文: {res.get('error') or res}"
+    else:
+        probe = await probe_bili_dynamic_connectivity()
+        if probe.get("ok"):
+            msg = (
+                f"✅ 【测试B站动态 · 0观看无污染连通性自检通过】\n"
+                f"（因今日 0 观看记录，为免污染主页未发出空白动态，已完成全链路接口探针校验）\n"
+                f"- 登录账号: {probe.get('account_name')} (UID: {probe.get('account_uid')})\n"
+                f"- 动态图床上传(upload_bfs): ✅ 成功 ({probe.get('bfs_detail')})\n"
+                f"- 动态创建网关权限(CSRF): ✅ 校验通过"
+            )
+        else:
+            msg = (
+                f"❌ 【测试B站动态 · 连通性自检未通过】\n"
+                f"- 失败阶段: {probe.get('stage', 'unknown')}\n"
+                f"- 完整报错原文: {probe.get('error') or probe.get('bfs_detail') or probe}"
+            )
+
+    await send_private_msg_raw(int(MASTER_QQ), msg)
+    if group_id:
+        await send_group_msg_raw(int(group_id), "主人，B站 动态连通性测试已完成，结果已私聊汇报给您喵～")
+    return True
+
+
 # 全局后台轮询守护任务句柄
 _CURRENT_POLL_TASK: asyncio.Task | None = None
 

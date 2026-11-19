@@ -585,7 +585,7 @@ async def _execute_agy_inference_once(
     返回本次思考中调用的工具名列表。
     """
     start_time = time.time()
-    allow_low = chat_id_str.startswith(("bili_", "daily_", "bg_"))
+    allow_low = True
     model_flags, resolved_model, resolved_effort = build_agy_model_flags(
         effort=effort,
         drop_effort=drop_effort,

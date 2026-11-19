@@ -96,13 +96,13 @@ DEFAULT_AGY_MODEL = f"{AGY_MODEL_FAMILY}-high"
 # ============================================================
 # 3.1. 各通道分级思考深度 (Effort 分级控制，严禁使用 xhigh/Extra)
 # ============================================================
-CHAT_AGY_EFFORT = "high"       # 前台主对话默认深度（首轮/复杂/图片/记忆走 high；纯文字闲聊续轮动态降为 medium）
-BILI_AGY_EFFORT = "medium"     # B站专属摸鱼冲浪（结构化手账评分与热梗提炼，medium 兼顾精度与额度）
+CHAT_AGY_EFFORT = "medium"     # 前台主对话常规基准深度（支持三档动态路由 low / medium / high，经由 build_agy_model_flags 映射至 gemini-4-hydrogen-{low|medium|high}）
+BILI_AGY_EFFORT = "medium"     # B站专属摸鱼冲浪（单视频精看结构化手账评分与热梗提炼，medium 兼顾精度与额度）
 ROUTER_AGY_EFFORT = "low"      # 话前辅助分类参考
 OBSERVER_AGY_EFFORT = "medium" # 后台事后内省观察者（好感共鸣/情绪跃迁/三层记忆抽取与核销）
 BACKGROUND_AGY_EFFORT = "low"  # 每日记忆总结等夜间批处理任务
 
-DEFAULT_AGY_EFFORT = CHAT_AGY_EFFORT  # 默认兜底兼容 (high)
+DEFAULT_AGY_EFFORT = CHAT_AGY_EFFORT  # 默认兜底兼容 (medium)
 ALLOWED_AGY_EFFORTS = ("low", "medium", "high")
 
 

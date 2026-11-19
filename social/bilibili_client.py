@@ -688,124 +688,273 @@ def rank_candidates_by_freshness(
     return [x[1] for x in scored]
 
 
+async def _fetch_favorite_folders_via_httpx(uid: int, cred: Optional["Credential"]) -> List[Dict[str, Any]]:
+    """
+    原生 httpx (trust_env=False) 直连 B站 官方 Web API 获取用户收藏夹列表，
+    消除第三方库偶发静默失败。
+    """
+    headers = _build_bili_cookie_headers(cred) if (cred and getattr(cred, "sessdata", "")) else {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Referer": f"https://space.bilibili.com/{uid}/favlist",
+    }
+    headers["Referer"] = f"https://space.bilibili.com/{uid}/favlist"
+    url = f"https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid={uid}&type=2"
+    async with httpx.AsyncClient(timeout=8.0, trust_env=False) as client:
+        resp = await client.get(url, headers=headers)
+        rj = resp.json()
+        if rj.get("code") == 0:
+            data_part = rj.get("data") or {}
+            return data_part.get("list") or []
+        raise RuntimeError(f"WebAPI list-all code={rj.get('code')}: {rj.get('message')}")
+
+
+async def _deal_favorite_via_httpx(aid: int, target_folder_id: int, cred: "Credential", bvid: str = "") -> Dict[str, Any]:
+    """
+    原生 httpx (trust_env=False) 直连 POST https://api.bilibili.com/x/v3/fav/resource/deal
+    携带完整 Cookie 与 csrf/bili_jct 执行收藏双轨兜底。
+    """
+    headers = _build_bili_cookie_headers(cred)
+    headers["Referer"] = f"https://www.bilibili.com/video/{bvid}" if bvid else "https://www.bilibili.com/"
+    headers["Origin"] = "https://www.bilibili.com"
+    headers["Content-Type"] = "application/x-www-form-urlencoded"
+    post_data = {
+        "rid": str(aid),
+        "type": "2",
+        "add_media_ids": str(int(target_folder_id)),
+        "del_media_ids": "",
+        "platform": "web",
+        "eab_x": "1",
+        "ramval": "0",
+        "ga": "1",
+        "gaia_source": "web_normal",
+        "csrf": str(cred.bili_jct or ""),
+    }
+    async with httpx.AsyncClient(timeout=8.0, trust_env=False) as client:
+        resp = await client.post(
+            "https://api.bilibili.com/x/v3/fav/resource/deal",
+            headers=headers,
+            data=post_data,
+        )
+        rj = resp.json()
+        code = rj.get("code")
+        if code == 0 or code == 11201 or "已收藏" in str(rj.get("message", "")):
+            return {"ok": True, "code": code, "raw": rj}
+        return {"ok": False, "code": code, "error": f"HTTP deal code={code}: {rj.get('message', rj)}"}
+
+
+async def _resolve_video_aid(bvid: str, cred: Optional["Credential"] = None) -> int:
+    """获取视频 aid（优先 get_video_details，失败走原生 httpx Web API 兜底）"""
+    det = await get_video_details(bvid, cred)
+    if det.get("ok") and det.get("aid"):
+        return int(det["aid"])
+    headers = _build_bili_cookie_headers(cred) if (cred and getattr(cred, "sessdata", "")) else {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": f"https://www.bilibili.com/video/{bvid}",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=8.0, trust_env=False) as client:
+            resp = await client.get(f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}", headers=headers)
+            rj = resp.json()
+            if rj.get("code") == 0:
+                return int((rj.get("data") or {}).get("aid", 0))
+    except Exception:
+        pass
+    return 0
+
+
 async def favorite_video(
     bvid: str,
     folder_name: str = "",
     credential: Optional["Credential"] = None,
-    allow_auto_create: bool = True,
+    allow_auto_create: bool = False,
+    fallback_to_default: bool = True,
 ) -> Dict[str, Any]:
     """
-    收藏指定视频。
-    - 默认 `allow_auto_create=True`（V5.1 调整4）：优先在现有收藏夹中按精确名称或关键词映射匹配；
-      若不存在目标分类夹则尝试自动新建；若新建受限或失败且账号已有默认收藏夹，则自动兜底归入默认收藏夹，避免漏收藏。
-    - 若调用方显式指定 `allow_auto_create=False` 且对应分类夹未创建，仍明确返回 missing_folder=True。
-    - 当 `folder_name` 为空时，直接使用默认收藏夹（列表首个）。
+    收藏指定视频（4A-收藏 双轨加固 + 7大固定收藏夹匹配 + 选项B默认夹极端兜底）：
+    - 拉取账号已有收藏夹列表：优先 `bilibili-api-python`，失败则回退原生 `httpx` (`trust_env=False`) 直连 Web API；
+    - 保持 `allow_auto_create=False`（禁止自动新建多余夹子）；
+    - 匹配顺序：① 精确标题匹配 -> ② 去空格/子串/关键词模糊匹配 -> ③ 极端兜底（选项 B）：
+      若极端情况下 7 个分类夹均匹配失败且 `fallback_to_default=True`，自动兜底收藏进账号的「默认收藏夹」，
+      并在返回结构与诊断账本中记录 `fallback_default=True` 与具体未命中原因 `fallback_reason`；
+    - 执行收藏：优先 `bilibili-api-python`，失败则自动回退原生 `httpx` 直连 `POST /x/v3/fav/resource/deal`。
     """
-    if not BILI_API_AVAILABLE:
-        return {"ok": False, "message": "未安装 bilibili-api-python"}
-
     cred = credential or load_bili_credential()
-    if not cred or not cred.dedeuserid:
-        return {"ok": False, "message": "尚未登录B站，无法执行收藏"}
+    if not cred or not getattr(cred, "dedeuserid", ""):
+        return {"ok": False, "message": "尚未登录B站，无法执行收藏", "error": "not_logged_in"}
 
-    v = video.Video(bvid=bvid, credential=cred)
-    try:
-        target_folder_id = None
-        target_folder_title = "默认收藏夹"
+    uid = int(cred.dedeuserid)
+    folder_list = []
+    folder_source = "bilibili_api"
 
-        # 1. 查询用户现有的所有收藏夹列表
-        fav_resp = await favorite_list.get_video_favorite_list(uid=int(cred.dedeuserid), credential=cred)
-        folder_list = fav_resp.get("list", []) or []
+    # 1. 双轨拉取用户现有的所有收藏夹列表
+    if BILI_API_AVAILABLE and favorite_list is not None:
+        try:
+            fav_resp = await favorite_list.get_video_favorite_list(uid=uid, credential=cred)
+            folder_list = (fav_resp or {}).get("list", []) or []
+        except Exception as e1:
+            print(f"⚠️ [bili_client] bilibili-api 拉取收藏夹列表异常，回退 httpx 直连: {e1}")
+            folder_list = []
 
-        # 2. 如果指定了文件夹名称，优先精确/别名匹配已有收藏夹
-        if folder_name and folder_name.strip():
-            target_name = folder_name.strip()
-            matched_folder = match_existing_favorite_folder(target_name, folder_list)
-            if matched_folder:
-                target_folder_id = matched_folder.get("id")
-                target_folder_title = matched_folder.get("title", target_name)
+    if not folder_list:
+        folder_source = "httpx_fallback"
+        try:
+            folder_list = await _fetch_favorite_folders_via_httpx(uid, cred)
+        except Exception as e2:
+            return {"ok": False, "error": f"双轨拉取收藏夹列表均失败: {e2}"}
 
-            # 仅在显式允许自动创建时才调用 API 新建
-            if not target_folder_id and allow_auto_create:
-                try:
-                    create_res = await favorite_list.create_video_favorite_list(
-                        title=target_name,
-                        credential=cred
-                    )
-                    if isinstance(create_res, dict):
-                        target_folder_id = create_res.get("id")
-                    elif isinstance(create_res, int):
-                        target_folder_id = create_res
-                    target_folder_title = target_name
-                except Exception as ce:
-                    print(f"⚠️ [bili_client] 自动创建收藏夹【{target_name}】失败: {ce}")
+    target_folder_id = None
+    target_folder_title = "默认收藏夹"
+    fallback_default = False
+    fallback_reason = ""
+    existing_titles = [str(f.get("title", "")).strip() for f in folder_list if f.get("title")]
 
-            if not target_folder_id:
-                if allow_auto_create and folder_list:
-                    target_folder_id = folder_list[0].get("id")
-                    target_folder_title = folder_list[0].get("title", "默认收藏夹")
-                    print(f"ℹ️ [bili_client] 收藏夹【{target_name}】新建受限，已兜底归入【{target_folder_title}】")
-                else:
-                    return {
-                        "ok": False,
-                        "missing_folder": True,
-                        "bvid": bvid,
-                        "requested_folder": target_name,
-                        "error": f"收藏夹【{target_name}】尚未创建，请先在B站手动创建对应分类收藏夹（当前不自动塞入默认收藏夹）",
-                    }
+    # 2. 如果指定了文件夹名称，按 ① 精确 -> ② 模糊/关键词 -> ③ 选项 B 默认夹极端兜底
+    if folder_name and folder_name.strip():
+        target_name = folder_name.strip()
+        matched_folder = match_existing_favorite_folder(target_name, folder_list)
+        if matched_folder:
+            target_folder_id = matched_folder.get("id")
+            target_folder_title = matched_folder.get("title", target_name)
 
-        # 3. 仅当未指定分类名时，才使用用户第一个收藏夹（默认收藏夹）
-        if not target_folder_id and folder_list:
-            target_folder_id = folder_list[0].get("id")
-            target_folder_title = folder_list[0].get("title", "默认收藏夹")
+        if not target_folder_id and allow_auto_create and BILI_API_AVAILABLE and favorite_list is not None:
+            try:
+                create_res = await favorite_list.create_video_favorite_list(title=target_name, credential=cred)
+                if isinstance(create_res, dict):
+                    target_folder_id = create_res.get("id")
+                elif isinstance(create_res, int):
+                    target_folder_id = create_res
+                target_folder_title = target_name
+            except Exception as ce:
+                print(f"⚠️ [bili_client] 自动创建收藏夹【{target_name}】失败: {ce}")
 
         if not target_folder_id:
-            return {"ok": False, "error": "未能获取到有效的收藏夹 ID"}
+            if fallback_to_default and folder_list:
+                default_f = next(
+                    (f for f in folder_list if "默认收藏夹" in str(f.get("title", ""))),
+                    folder_list[0]
+                )
+                target_folder_id = default_f.get("id")
+                target_folder_title = default_f.get("title", "默认收藏夹")
+                fallback_default = True
+                fallback_reason = f"目标分类夹【{target_name}】未在账号已有夹({existing_titles})中命中，触发选项B兜底至【{target_folder_title}】"
+                print(f"ℹ️ [bili_client] {fallback_reason}")
+            else:
+                return {
+                    "ok": False,
+                    "missing_folder": True,
+                    "bvid": bvid,
+                    "requested_folder": target_name,
+                    "error": f"收藏夹【{target_name}】未匹配成功且未启用默认夹兜底",
+                }
 
-        # 4. 执行真实收藏 (add_media_ids)
-        await v.set_favorite(add_media_ids=[int(target_folder_id)])
-        return {
-            "ok": True,
-            "bvid": bvid,
-            "folder": target_folder_title,
-            "folder_id": target_folder_id,
-            "message": f"已成功将视频【{bvid}】收藏至B站【{target_folder_title}】！"
-        }
-    except Exception as e:
-        err_str = str(e)
-        if "已收藏" in err_str or "11201" in err_str:
+    # 3. 未指定分类名时使用默认收藏夹
+    if not target_folder_id and folder_list:
+        default_f = next(
+            (f for f in folder_list if "默认收藏夹" in str(f.get("title", ""))),
+            folder_list[0]
+        )
+        target_folder_id = default_f.get("id")
+        target_folder_title = default_f.get("title", "默认收藏夹")
+
+    if not target_folder_id:
+        return {"ok": False, "error": "未能获取到有效的收藏夹 ID"}
+
+    # 4. 双轨执行真实收藏：优先 bilibili-api-python，失败回退原生 httpx 直连 /x/v3/fav/resource/deal
+    api_err_msg = ""
+    if BILI_API_AVAILABLE and video is not None:
+        try:
+            v = video.Video(bvid=bvid, credential=cred)
+            await v.set_favorite(add_media_ids=[int(target_folder_id)])
             return {
                 "ok": True,
                 "bvid": bvid,
-                "folder": folder_name or "默认收藏夹",
-                "message": f"视频【{bvid}】此前已经在收藏夹中啦～"
+                "folder": target_folder_title,
+                "folder_id": target_folder_id,
+                "via": "bilibili_api",
+                "folder_list_source": folder_source,
+                "fallback_default": fallback_default,
+                "fallback_reason": fallback_reason,
+                "message": f"已成功将视频【{bvid}】收藏至B站【{target_folder_title}】！"
             }
-        return {"ok": False, "error": f"收藏失败 ({type(e).__name__}): {e}"}
+        except Exception as e:
+            err_str = str(e)
+            if "已收藏" in err_str or "11201" in err_str:
+                return {
+                    "ok": True,
+                    "bvid": bvid,
+                    "folder": target_folder_title,
+                    "folder_id": target_folder_id,
+                    "via": "bilibili_api_already_fav",
+                    "fallback_default": fallback_default,
+                    "fallback_reason": fallback_reason,
+                    "message": f"视频【{bvid}】此前已经在收藏夹【{target_folder_title}】中啦～"
+                }
+            api_err_msg = f"{type(e).__name__}: {e}"
+            print(f"⚠️ [bili_client] bilibili-api 收藏视频【{bvid}】失败 ({api_err_msg})，启动 httpx 双轨兜底...")
+
+    # 回退原生 httpx 直连 POST https://api.bilibili.com/x/v3/fav/resource/deal
+    try:
+        aid = await _resolve_video_aid(bvid, cred)
+        if not aid:
+            return {"ok": False, "error": f"收藏失败(主接口:{api_err_msg} | httpx兜底未能解析视频aid)"}
+        deal_res = await _deal_favorite_via_httpx(aid=aid, target_folder_id=int(target_folder_id), cred=cred, bvid=bvid)
+        if deal_res.get("ok"):
+            return {
+                "ok": True,
+                "bvid": bvid,
+                "folder": target_folder_title,
+                "folder_id": target_folder_id,
+                "via": "httpx_fallback",
+                "folder_list_source": folder_source,
+                "fallback_default": fallback_default,
+                "fallback_reason": fallback_reason,
+                "message": f"已通过HTTP双轨兜底将视频【{bvid}】收藏至B站【{target_folder_title}】！"
+            }
+        return {
+            "ok": False,
+            "code": deal_res.get("code"),
+            "error": f"收藏双轨均失败 (主接口: {api_err_msg} | HTTP兜底: {deal_res.get('error')})"
+        }
+    except Exception as he:
+        return {"ok": False, "error": f"收藏双轨异常 (主接口: {api_err_msg} | HTTP兜底异常: {he})"}
 
 
 async def get_user_favorite_folders(credential: Optional["Credential"] = None) -> Dict[str, Any]:
     """
-    获取弥酱（或当前登录账号）的所有 B站 收藏夹列表。
+    获取弥酱（或当前登录账号）的所有 B站 收藏夹列表（优先 bilibili-api-python，失败回退原生 httpx 直连）。
     """
-    if not BILI_API_AVAILABLE:
-        return {"ok": False, "error": "未安装 bilibili-api-python"}
     cred = credential or load_bili_credential()
-    if not cred or not cred.dedeuserid:
+    if not cred or not getattr(cred, "dedeuserid", ""):
         return {"ok": False, "error": "尚未登录B站，无法查看收藏夹"}
-    try:
-        fav_resp = await favorite_list.get_video_favorite_list(uid=int(cred.dedeuserid), credential=cred)
-        raw_list = fav_resp.get("list", []) or []
-        folders = []
-        for f in raw_list:
-            folders.append({
-                "id": f.get("id"),
-                "title": f.get("title", ""),
-                "media_count": f.get("media_count", 0),
-                "is_public": f.get("attr", 0) == 0
-            })
-        return {"ok": True, "count": len(folders), "folders": folders}
-    except Exception as e:
-        return {"ok": False, "error": f"获取收藏夹列表失败: {e}"}
+
+    uid = int(cred.dedeuserid)
+    raw_list = None
+    via = "bilibili_api"
+
+    if BILI_API_AVAILABLE and favorite_list is not None:
+        try:
+            fav_resp = await favorite_list.get_video_favorite_list(uid=uid, credential=cred)
+            raw_list = (fav_resp or {}).get("list", []) or []
+        except Exception as e:
+            print(f"⚠️ [bili_client] get_user_favorite_folders 主接口异常，切换 httpx 兜底: {e}")
+            raw_list = None
+
+    if raw_list is None:
+        via = "httpx_fallback"
+        try:
+            raw_list = await _fetch_favorite_folders_via_httpx(uid, cred)
+        except Exception as e2:
+            return {"ok": False, "error": f"获取收藏夹列表失败: {e2}"}
+
+    folders = []
+    for f in (raw_list or []):
+        folders.append({
+            "id": f.get("id"),
+            "title": f.get("title", ""),
+            "media_count": f.get("media_count", 0),
+            "is_public": f.get("attr", 0) == 0
+        })
+    return {"ok": True, "via": via, "count": len(folders), "folders": folders}
 
 
 async def get_favorite_folder_videos(folder_name_or_id: str = "", page: int = 1, credential: Optional["Credential"] = None) -> Dict[str, Any]:
@@ -1653,6 +1802,142 @@ async def get_bili_user_info(uid: int = 0, credential: Optional["Credential"] = 
         return {"ok": False, "error": f"获取用户({target_uid})空间档案异常: {e}"}
 
 
+async def _download_bili_cover_bytes(image_url: str) -> tuple[bytes, str]:
+    """
+    防盗链本地预拉封面：
+    强制使用 httpx (trust_env=False) 携带 Referer: https://www.bilibili.com/ 与标准桌面 User-Agent
+    下载二进制到内存，规避远程直传触发 403 防盗链。
+    返回 (image_bytes, mime_ext)
+    """
+    target_img = (image_url or "").strip()
+    if not target_img:
+        return b"", "jpg"
+    if target_img.startswith("//"):
+        target_img = "https:" + target_img
+    elif target_img.startswith("http://"):
+        target_img = "https://" + target_img[7:]
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Referer": "https://www.bilibili.com/",
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    }
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, trust_env=False) as client:
+        resp = await client.get(target_img, headers=headers)
+        if resp.status_code != 200 or not resp.content:
+            raise RuntimeError(f"下载封面 HTTP {resp.status_code}")
+        ct = (resp.headers.get("content-type") or "").lower()
+        ext = "png" if "png" in ct else ("webp" if "webp" in ct else "jpg")
+        return resp.content, ext
+
+
+async def _upload_dynamic_pic_via_httpx(img_bytes: bytes, ext: str, cred: "Credential") -> Dict[str, Any]:
+    """
+    原生 httpx 上传 B站 动态图床（带 Referer: https://t.bilibili.com/）。
+    """
+    headers = _build_bili_cookie_headers(cred)
+    headers["Referer"] = "https://t.bilibili.com/"
+    headers["Origin"] = "https://t.bilibili.com"
+    files = {
+        "file_up": (f"cover.{ext}", img_bytes, f"image/{'jpeg' if ext == 'jpg' else ext}"),
+    }
+    data = {
+        "biz": "draw",
+        "category": "daily",
+        "csrf": str(cred.bili_jct or ""),
+    }
+    async with httpx.AsyncClient(timeout=12.0, trust_env=False) as client:
+        resp = await client.post(
+            "https://api.bilibili.com/x/dynamic/feed/draw/upload_bfs",
+            headers=headers,
+            data=data,
+            files=files,
+        )
+        rj = resp.json()
+        if rj.get("code") == 0 and isinstance(rj.get("data"), dict):
+            return {"ok": True, "pic_data": rj["data"], "code": 0}
+        return {"ok": False, "code": rj.get("code"), "error": f"upload_bfs code={rj.get('code')}: {rj.get('message', rj)}"}
+
+
+async def _create_web_dynamic_via_httpx(
+    text: str,
+    cred: "Credential",
+    pic_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    原生 httpx Web 动态创建接口（支持图文 scene=2 与纯文字 scene=1，自动兼容 /x/dynamic/feed/create/dyn 与 vc.bilibili.com）。
+    """
+    headers = _build_bili_cookie_headers(cred)
+    headers["Referer"] = "https://t.bilibili.com/"
+    headers["Origin"] = "https://t.bilibili.com"
+    csrf = str(cred.bili_jct or "")
+
+    scene = 2 if pic_data else 1
+    payload: Dict[str, Any] = {
+        "dyn_req": {
+            "content": {
+                "contents": [
+                    {"raw_text": text, "type": 1, "biz_id": ""}
+                ]
+            },
+            "scene": scene,
+            "meta": {
+                "app_meta": {"from": "create.dynamic.web", "mobi_app": "web"}
+            },
+        }
+    }
+    if pic_data:
+        img_url = pic_data.get("image_url") or pic_data.get("img_src") or ""
+        img_w = int(pic_data.get("image_width") or pic_data.get("img_width") or 1280)
+        img_h = int(pic_data.get("image_height") or pic_data.get("img_height") or 720)
+        img_size = float(pic_data.get("img_size") or 120.0)
+        payload["dyn_req"]["pics"] = [
+            {
+                "img_src": img_url,
+                "img_width": img_w,
+                "img_height": img_h,
+                "img_size": img_size,
+            }
+        ]
+
+    async with httpx.AsyncClient(timeout=12.0, trust_env=False) as client:
+        resp = await client.post(
+            f"https://api.bilibili.com/x/dynamic/feed/create/dyn?csrf={csrf}&platform=web",
+            headers={**headers, "Content-Type": "application/json"},
+            json=payload,
+        )
+        rj = resp.json()
+        if rj.get("code") == 0:
+            d_part = rj.get("data") or {}
+            dyn_id = d_part.get("dyn_id_str") or d_part.get("dyn_id") or ""
+            return {"ok": True, "dyn_id": dyn_id, "code": 0, "raw": rj}
+
+        # 若新接口受 WBI 或参数限制且为纯文本，自动尝试 vc create_dynamic 兼容端点
+        if not pic_data:
+            vc_resp = await client.post(
+                "https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/create",
+                headers={**headers, "Content-Type": "application/x-www-form-urlencoded"},
+                data={
+                    "dynamic_id": "0",
+                    "type": "4",
+                    "rid": "0",
+                    "content": text,
+                    "extension": '{"emoji_type":1}',
+                    "at_uids": "",
+                    "ctrl": "[]",
+                    "csrf_token": csrf,
+                    "csrf": csrf,
+                },
+            )
+            vc_j = vc_resp.json()
+            if vc_j.get("code") == 0:
+                d2 = vc_j.get("data") or {}
+                dyn_id2 = d2.get("dynamic_id_str") or d2.get("dynamic_id") or ""
+                return {"ok": True, "dyn_id": dyn_id2, "code": 0, "raw": vc_j}
+
+        return {"ok": False, "code": rj.get("code"), "error": f"create_dyn code={rj.get('code')}: {rj.get('message', rj)}"}
+
+
 async def publish_bili_dynamic(
     text: str,
     image_url: str = "",
@@ -1660,66 +1945,186 @@ async def publish_bili_dynamic(
     credential: Optional["Credential"] = None,
 ) -> Dict[str, Any]:
     """
-    发布 B站 动态（支持附带单张封面图，若拉图或带图发送失败则自动降级为纯文字动态）。
+    【阶段三 3.4 三段式降级动态发布链路】
+    - 防盗链本地预拉封面：强制使用 `httpx` (`trust_env=False`) 携带 `Referer: https://www.bilibili.com/` 下载二进制到内存；
+    - 三段降级发布链路：
+      1. 首选：`bilibili-api-python` 图文动态发送（传入内存图片字节/对象）；
+      2. 降级 1：原生 `httpx` 上传 B站 动态图床（带 `Referer: https://t.bilibili.com/`）+ 原生 Web 动态创建接口发送图文；
+      3. 降级 2：若图床或图文接口受风控/参数阻拦，自动降级为纯文字动态（确保附带完整可点击 `https://www.bilibili.com/video/{bvid}` 链接）。
     """
-    if not BILI_API_AVAILABLE or not dynamic:
-        return {"ok": False, "error": "未安装或未启用 bilibili_api.dynamic"}
-
     cred = credential or load_bili_credential()
-    if not cred or not cred.dedeuserid:
-        return {"ok": False, "error": "尚未登录B站，无法发布动态"}
+    if not cred or not getattr(cred, "dedeuserid", ""):
+        return {"ok": False, "error": "尚未登录B站，无法发布动态", "code": -101}
 
     clean_text = (text or "").strip()
     if not clean_text:
-        return {"ok": False, "error": "动态文本不能为空"}
+        return {"ok": False, "error": "动态文本不能为空", "code": -400}
 
-    has_image = False
-    pic_obj = None
-    target_img = (image_url or "").strip()
-    if target_img and Picture is not None:
-        if target_img.startswith("//"):
-            target_img = "https:" + target_img
-        elif target_img.startswith("http://"):
-            target_img = "https://" + target_img[7:]
+    video_link = f"https://www.bilibili.com/video/{bvid}" if bvid else ""
+
+    # Step 0: 防盗链本地预拉封面到内存
+    img_bytes = b""
+    img_ext = "jpg"
+    cover_err = ""
+    if image_url and image_url.strip():
         try:
-            pic_obj = await Picture.load_url(target_img)
-            has_image = True
-        except Exception as pe:
-            print(f"⚠️ [publish_bili_dynamic] 加载封面图失败，降级为纯文本动态 ({target_img}): {pe}")
-            pic_obj = None
-            has_image = False
+            img_bytes, img_ext = await _download_bili_cover_bytes(image_url)
+        except Exception as ce:
+            cover_err = str(ce)
+            print(f"⚠️ [publish_bili_dynamic] 防盗链预拉取封面失败 ({image_url}): {ce}")
+
+    stage_errors = []
+    if cover_err:
+        stage_errors.append(f"cover_prefetch:{cover_err}")
+
+    # ------------------------------------------------------------
+    # 首选 (Stage 1)：bilibili-api-python 图文动态发送（传入内存图片字节/对象）
+    # ------------------------------------------------------------
+    if img_bytes and BILI_API_AVAILABLE and dynamic is not None and Picture is not None:
+        try:
+            if hasattr(Picture, "from_content"):
+                pic_obj = Picture.from_content(img_bytes, img_ext)
+            else:
+                import tempfile, os
+                with tempfile.NamedTemporaryFile(suffix=f".{img_ext}", delete=False) as tf:
+                    tf.write(img_bytes)
+                    tmp_p = tf.name
+                try:
+                    pic_obj = Picture.from_file(tmp_p)
+                finally:
+                    try:
+                        os.remove(tmp_p)
+                    except Exception:
+                        pass
+            dyn = dynamic.BuildDynamic.empty().add_plain_text(clean_text).add_image(pic_obj)
+            resp = await dynamic.send_dynamic(info=dyn, credential=cred)
+            dyn_id = resp.get("dyn_id") if isinstance(resp, dict) else str(resp)
+            return {
+                "ok": True,
+                "stage": "stage1_bili_api_image",
+                "dyn_id": dyn_id,
+                "has_image": True,
+                "bvid": bvid,
+                "raw": resp if isinstance(resp, dict) else {"result": str(resp)},
+            }
+        except Exception as e1:
+            err1 = f"{type(e1).__name__}: {e1}"
+            stage_errors.append(f"stage1:{err1}")
+            print(f"⚠️ [publish_bili_dynamic] 首选 bilibili-api 图文发布失败，转入降级 1 (原生 httpx 图床): {err1}")
+
+    # ------------------------------------------------------------
+    # 降级 1 (Stage 2)：原生 httpx 上传 B站动态图床 + 原生 Web 动态创建接口发送图文
+    # ------------------------------------------------------------
+    if img_bytes:
+        try:
+            up_res = await _upload_dynamic_pic_via_httpx(img_bytes, img_ext, cred)
+            if up_res.get("ok") and up_res.get("pic_data"):
+                create_res = await _create_web_dynamic_via_httpx(clean_text, cred, pic_data=up_res["pic_data"])
+                if create_res.get("ok"):
+                    return {
+                        "ok": True,
+                        "stage": "stage2_httpx_image",
+                        "dyn_id": create_res.get("dyn_id"),
+                        "has_image": True,
+                        "bvid": bvid,
+                        "raw": create_res.get("raw"),
+                    }
+                stage_errors.append(f"stage2_create:{create_res.get('error')}")
+            else:
+                stage_errors.append(f"stage2_upload:{up_res.get('error')}")
+        except Exception as e2:
+            stage_errors.append(f"stage2_exc:{type(e2).__name__}:{e2}")
+            print(f"⚠️ [publish_bili_dynamic] 降级 1 (httpx 图文) 失败，转入降级 2 (纯文字兜底): {e2}")
+
+    # ------------------------------------------------------------
+    # 降级 2 (Stage 3)：自动降级为纯文字动态（确保附带完整可点击 https://www.bilibili.com/video/{bvid} 链接）
+    # ------------------------------------------------------------
+    fallback_text = clean_text
+    if video_link and video_link not in fallback_text:
+        fallback_text = f"{fallback_text}\n{video_link}"
+
+    if BILI_API_AVAILABLE and dynamic is not None:
+        try:
+            dyn_plain = dynamic.BuildDynamic.empty().add_plain_text(fallback_text)
+            resp3 = await dynamic.send_dynamic(info=dyn_plain, credential=cred)
+            dyn_id3 = resp3.get("dyn_id") if isinstance(resp3, dict) else str(resp3)
+            return {
+                "ok": True,
+                "stage": "stage3_text_only_bili_api",
+                "dyn_id": dyn_id3,
+                "has_image": False,
+                "fallback_text_only": True,
+                "bvid": bvid,
+                "stage_errors": stage_errors,
+                "raw": resp3 if isinstance(resp3, dict) else {"result": str(resp3)},
+            }
+        except Exception as e3:
+            stage_errors.append(f"stage3_bili_api:{type(e3).__name__}:{e3}")
 
     try:
-        dyn = dynamic.BuildDynamic.empty().add_plain_text(clean_text)
-        if pic_obj is not None:
-            dyn.add_image(pic_obj)
-        resp = await dynamic.send_dynamic(info=dyn, credential=cred)
-        dyn_id = resp.get("dyn_id") if isinstance(resp, dict) else str(resp)
-        return {
-            "ok": True,
-            "dyn_id": dyn_id,
-            "has_image": has_image,
-            "bvid": bvid,
-            "raw": resp if isinstance(resp, dict) else {"result": str(resp)},
-        }
+        httpx_plain = await _create_web_dynamic_via_httpx(fallback_text, cred, pic_data=None)
+        if httpx_plain.get("ok"):
+            return {
+                "ok": True,
+                "stage": "stage3_text_only_httpx",
+                "dyn_id": httpx_plain.get("dyn_id"),
+                "has_image": False,
+                "fallback_text_only": True,
+                "bvid": bvid,
+                "stage_errors": stage_errors,
+                "raw": httpx_plain.get("raw"),
+            }
+        stage_errors.append(f"stage3_httpx:{httpx_plain.get('error')}")
+    except Exception as e4:
+        stage_errors.append(f"stage3_httpx_exc:{type(e4).__name__}:{e4}")
+
+    return {
+        "ok": False,
+        "bvid": bvid,
+        "stage_errors": stage_errors,
+        "error": " | ".join(stage_errors) if stage_errors else "三段式动态发布均失败",
+    }
+
+
+async def probe_bili_dynamic_connectivity(credential: Optional["Credential"] = None) -> Dict[str, Any]:
+    """
+    【主人『测试B站动态』0观看无污染连通性自检】
+    当今日 0 观看记录时，不向主页发出垃圾空白动态，而是真实校验：
+    1) B站登录凭证有效性 & CSRF (bili_jct) 完整性；
+    2) 防盗链封面拉取 + B站动态图床 (`upload_bfs`) 真实 1x1 像素连通性与权限校验；
+    3) 动态发布网关可达性探测。
+    """
+    from social.bilibili_auth import verify_bili_credential
+    cred = credential or load_bili_credential()
+    if not cred or not getattr(cred, "sessdata", ""):
+        return {"ok": False, "stage": "auth", "error": "本地未配置有效 B站 凭证 (bili_credential.json)"}
+
+    auth_res = await verify_bili_credential(cred)
+    if not auth_res.get("logged_in"):
+        return {"ok": False, "stage": "auth_verify", "error": f"B站登录态已失效: {auth_res.get('message', auth_res)}"}
+
+    if not getattr(cred, "bili_jct", ""):
+        return {"ok": False, "stage": "csrf_check", "error": "凭证缺少 bili_jct (CSRF Token)，无法调用写接口"}
+
+    # 构造 1x1 透明 PNG 二进制探测动态图床 upload_bfs 连通性（仅上传图床不创建动态，0主页污染）
+    tiny_png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc`\x00\x00"
+        b"\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    try:
+        up_probe = await _upload_dynamic_pic_via_httpx(tiny_png, "png", cred)
     except Exception as e:
-        # 若带图发动态失败，自动回退纯文本重试一次
-        if pic_obj is not None:
-            print(f"⚠️ [publish_bili_dynamic] 带图发布失败，尝试纯文本重发: {e}")
-            try:
-                dyn_plain = dynamic.BuildDynamic.empty().add_plain_text(clean_text)
-                resp2 = await dynamic.send_dynamic(info=dyn_plain, credential=cred)
-                dyn_id2 = resp2.get("dyn_id") if isinstance(resp2, dict) else str(resp2)
-                return {
-                    "ok": True,
-                    "dyn_id": dyn_id2,
-                    "has_image": False,
-                    "fallback_text_only": True,
-                    "bvid": bvid,
-                    "raw": resp2 if isinstance(resp2, dict) else {"result": str(resp2)},
-                }
-            except Exception as e2:
-                return {"ok": False, "error": f"纯文本降级发动态也失败 ({type(e2).__name__}): {e2}"}
-        return {"ok": False, "error": f"发布B站动态失败 ({type(e).__name__}): {e}"}
+        up_probe = {"ok": False, "error": f"图床请求异常: {type(e).__name__}: {e}"}
+
+    return {
+        "ok": bool(up_probe.get("ok")),
+        "mode": "dry_run_probe_only",
+        "account_name": auth_res.get("name", ""),
+        "account_uid": auth_res.get("uid", ""),
+        "bfs_upload_ok": bool(up_probe.get("ok")),
+        "bfs_detail": up_probe.get("pic_data", {}).get("image_url", "OK") if up_probe.get("ok") else up_probe.get("error"),
+        "error": "" if up_probe.get("ok") else str(up_probe.get("error", "")),
+    }
 
 
