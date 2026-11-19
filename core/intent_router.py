@@ -190,11 +190,11 @@ def route_chat_effort_with_reason(
             return "medium", "P2_breathe_exempt:pending_thought_or_bili_share->medium"
         return "low", "P2_breathe:group_casual_or_normal_outreach->low"
 
-    # 2.2 群聊话题压力出场（非 must_reply，上下文及本轮消息无图片且无复杂工具域 -> 一律 low）
+    # 2.2 群聊话题压力出场（非 must_reply，无图片且无复杂/敏感工具域 -> 一律 low；普通问号放宽，复杂问句已由 P1 拦截）
     if not is_private and not must_reply:
-        if not has_sensitive_tool and not has_question:
+        if not has_sensitive_tool:
             return "low", "P2_group_pressure_burst:no_image_no_tool->low"
-        return "medium", "P2_group_pressure_burst:with_question_or_tool->medium"
+        return "medium", "P2_group_pressure_burst:with_sensitive_tool->medium"
 
     # 2.3 朋友以下（好感度 < 500，严格不包含“朋友”级别）的私聊首轮起手
     if is_private and not is_continuation_turn and not is_master and aff < 500.0:

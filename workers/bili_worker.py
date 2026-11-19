@@ -585,7 +585,7 @@ async def _trigger_immediate_bili_share(note: dict, feed_data: dict):
         group_shared = feed_data.get("group_shared_count", 0)
         allowed_groups = get_allowed_groups()
         if group_shared < 2 and allowed_groups:
-            target_group = allowed_groups[0]
+            target_group = sorted(allowed_groups)[0]
             hint = (
                 f"【B站冲浪即兴安利】\n"
                 f"你刚刚在 B 站刷完了一个让你很有分享欲的视频《{title}》(UP主: {author}, BV号: {bvid}, 链接: {video_url})。\n"
@@ -1190,7 +1190,7 @@ async def run_bili_daily_dynamic_once(today_str: str = "") -> dict:
 
     dyn_prompt = (
         f"{STATIC_PERSONA}\n\n"
-        f"【情境设定】：现在是 {target_date} 晚上 11 点左右，你正准备结束今天在 B站 的摸鱼冲浪，发一条专属【B站空间动态】总结今天刷 B站 的收获或吐槽。\n"
+        f"【情境设定】：现在是 {target_date} {now_utc8.strftime('%H:%M')}，你正准备结束今天在 B站 的摸鱼冲浪，发一条专属【B站空间动态】总结今天刷 B站 的收获或吐槽。\n"
         f"【严格要求】：\n"
         f"1. **重心100%放在下面你今天真实看过的 B站 视频内容上**，禁止写成 QQ 群聊流水账、禁止莫名其妙提 QQ 群友日常！\n"
         f"2. 字数控制在 90~170 字，像一个在 B站 冲了一天浪的二次元少女睡前碎碎念，自然带点吐槽或安利，不要用分点列表，不要出现 Markdown 符号。\n"

@@ -13,7 +13,7 @@
 >    - **【绝对红线】严禁打包任何 `.json` 数据、状态与配置文件**（如 `allowed_groups.json`, `user_profiles.json`, `qzone_history.json`, `chat_state.json`, `bili_credential.json` 等），防止远端服务器解压时意外覆写白名单和运行状态数据；
 >    - **【绝对红线】严禁打包 Markdown 文档**（如 `project_status.md`, `plan.md` 等），避免向生产服务器冗余上传文档。
 
-> **最后更新时间**: 2026年11月 (星见弥 V5.2：新版 E1 四把防通胀情绪锁与 M2 437 条静态全复合词库 + 前台 `low` 强度解禁与三档可靠路由/必回熔断升档 + B 站 5 粗筛/单精看/80min 冲浪调优、收藏双轨+选项 B 默认夹兜底、三段降级动态与 0-LLM 主人诊断自检 + 思考期急件防漏接)
+> **最后更新时间**: 2026年11月 (星见弥 V5.2.1：审查缺陷修复闭环 — 锁 2 温和压制重构防微弱波动腰斩、`reason_updated_at` 独立 1h 起因过期、消除 L1 历史旧图污染 `context_has_image`、B 站即兴分享 `set` 下标修复与动态时间对齐、急件池强杀收口及全私聊兜底)
 > **当前状态**: 
 > - **V5.2 情绪引擎动力学重构（新版 E1 四把物理锁）与 M2 437 条静态全复合词库 (`social/mood_manager.py`, `social/mood_lexicon.py`, `workers/post_turn_observer.py`)**：
 >   - **保留 7 维结构与统一五档梯度**：100% 兼容 `happy / calm / sweet / proud / worry / sulky / jealous` 及 WebUI 雷达图与多情感语音，统一五档阈值（0档静默 `0~29`、1档轻度 `30~54`、2档中度 `55~69`、3档强烈 `70~89`、4档爆表 `90~100`）；
@@ -949,6 +949,23 @@
 - **阶段四：思考期急件防漏接、防抖日志对齐与脑区路径核查 (`attention/debounce_queue.py`, `config.py`)**：
   - 维持 `INFLIGHT_TURNS` 繁忙期内对普通群聊水聊的降维沉淀；新增 `PENDING_URGENT_TURNS` 急件待补答池，当繁忙期收到群聊直接 `@`/叫名字/引用回复弥酱或主人私聊（未触发打断重跑）时暂存急件，待当前轮次结束释放 `INFLIGHT_TURNS` 后自动拉起 `1.2s` 极短防抖补答；
   - 修复出队日志硬编码 `[5s防抖结束]` 为动态打印实际防抖秒数（如 `[2.2s防抖结束]` / `[4.8s防抖结束]`）；核查确认 `config.py` 中 `_get_candidate_brain_roots()` 为真实生产宿主路径 `("/home/your_user", "/root")`。
+
+### 44. V5.2.1 代码审查 6 项高/中危缺陷修复与回归闭环 (Code Review Bugfixes v5.2.1)
+- **【高危】情绪引擎锁 2 温和对立压制重构 (`social/mood_manager.py`)**：
+  - 根除 `apply_gentle_opposite_suppression()` 中 `max(coexist_limit, ...)` 紧跟 `if target_v > coexist_limit` 导致的死代码强砍 Bug；改为优先按 `dom_gain * suppression_ratio` (`0.32x`) 柔和回压，`1 : 0.7` 共存上限仅当增长侧确实成为更强主导极 (`dom_peak >= 30.0` 且 `dom_peak >= cur_v`) 时生效，杜绝微弱波动（如 `sulky=85` 时 `happy` 从 `26` 涨到 `30`）腰斩高数值主情绪。
+- **【高危】消除 L1 群历史旧图污染 `context_has_image` (`attention/debounce_queue.py`)**：
+  - 将 `_trigger_ai_impl()` 中 `ctx_has_img` 的检测范围由包含 25 分钟 L1 群历史的 `combined_message` 收窄为仅检查本轮最新消息 (`merged_msg_text`) 与 `ephemeral_context`，避免活跃群里纯文字压力出场与普通冒泡被历史旧图劫持升档至 `high`。
+- **【高危】B 站群聊即兴分享 `set` 下标崩溃修复 (`workers/bili_worker.py`)**：
+  - 修复 `_trigger_immediate_bili_share()` 对 `get_allowed_groups()` 返回的 `set` 执行 `allowed_groups[0]` 必抛 `TypeError` 的问题，改为 `sorted(allowed_groups)[0]`。
+- **【中危】起因 1 小时过期独立时间戳 (`social/mood_manager.py`)**：
+  - 新增 `reason_updated_at` 字段（兼容旧状态文件，缺省回退 `updated_at`），仅当 `meaningful_shift` 真正刷新 `last_reason` 时更新 `reason_updated_at`；`build_mood_injection_block()` 改用 `now - reason_updated_at <= 3600.0` 判断过期，彻底防止日常小波动给旧起因无限续命。
+- **【中危】思考期急件池强杀收口与全私聊兜底 (`attention/debounce_queue.py`)**：
+  - 主人 `@弥酱 停/闭嘴` 手动终止指令中同步执行 `PENDING_URGENT_TURNS.pop(chat_id_str, None)`，防止强杀后 `1.2s` 自动复活补答；
+  - `enqueue_message()` 繁忙期分支中将所有 `is_private`（含主人与全部好友私聊）在未能触发打断重跑时统一登记入 `PENDING_URGENT_TURNS`，避免好友私聊被静默降维吞没。
+- **【细节对齐】(`core/intent_router.py`, `workers/bili_worker.py`, `attention/debounce_queue.py`)**：
+  - `route_chat_effort_with_reason()` 优先级 2.2 群聊话题压力出场放宽普通问号（复杂问句已由 P1 拦截），仅保留无图且无敏感工具域即走 `low`；
+  - `run_bili_daily_dynamic_once()` 动态 Prompt 中的“晚上 11 点左右”改为动态北京时间 `{now_utc8.strftime('%H:%M')}`；
+  - 群压力爆发日志中的硬编码“进入 5s 防抖”对齐为动态 `{GROUP_DEBOUNCE_WAIT:.1f}s`。
 
 
 ---

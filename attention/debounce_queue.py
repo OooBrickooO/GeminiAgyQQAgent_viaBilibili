@@ -270,7 +270,10 @@ async def _trigger_ai_impl(
         chat_id_str=chat_id_str
     )
     soft_turns = get_group_soft_cap_turns(str(group_id)) if (not is_private and group_id) else 0
-    ctx_has_img = ("[图片#" in (combined_message or "")) or ("[CQ:image" in (combined_message or ""))
+    # 仅检查本轮最新消息 (merged_msg_text / messages_list) 与 ephemeral_context 是否含图片，
+    # 严禁扫描包含 25 分钟 L1 群历史的 combined_message，避免历史旧图污染纯文字压力出场与普通冒泡。
+    focus_img_probe = f"{merged_msg_text}\n{ephemeral_context or ''}"
+    ctx_has_img = ("[图片#" in focus_img_probe) or ("[CQ:image" in focus_img_probe)
     chat_effort, effort_rule_tag = route_chat_effort_with_reason(
         message_text=merged_msg_text,
         is_continuation_turn=is_continuation_turn,
@@ -558,10 +561,9 @@ async def enqueue_message(
             else:
                 # 【阶段四 4.1 思考期急件防漏接】：
                 # 若新到达消息属于：群聊直接 @/叫名字/引用回复弥酱 (is_urgent_call or must_reply)，
-                # 或主人私聊（且该消息未触发打断重跑，如本轮已开口或处于收尾期），
-                # 为该通道记录待补答标记并暂存这批急件，待当前轮次结束释放 INFLIGHT_TURNS 后自动拉起补答！
-                is_master_priv = is_private and (str(sender_id) == str(MASTER_QQ))
-                if is_urgent_call or (not is_private and must_reply) or is_master_priv:
+                # 或任意私聊通道 (is_private，含主人与好友私聊在未能触发打断重跑如已 spoke 或收尾期时)，
+                # 均统一登记入 PENDING_URGENT_TURNS 暂存，待当前轮次结束释放 INFLIGHT_TURNS 后自动拉起补答，避免静默吞消息！
+                if is_urgent_call or (not is_private and must_reply) or is_private:
                     bucket = PENDING_URGENT_TURNS.get(chat_id_str)
                     if bucket:
                         bucket["messages"].append(raw_message)
@@ -681,6 +683,8 @@ async def handle_incoming_event(message_str: str):
                                 pass
                             DEBOUNCE_QUEUES.pop(chat_id_str, None)
                             print(f"🛑 [主人手动终止] 已清空通道 {chat_id_str} 的待处理防抖队列！")
+                        if PENDING_URGENT_TURNS.pop(chat_id_str, None) is not None:
+                            print(f"🛑 [主人手动终止] 已清空通道 {chat_id_str} 的思考期急件待补答池！")
                         return
 
                     bili_login_keywords = ["登录b站", "b站登录", "b站扫码", "绑定b站", "b站状态", "b站账号", "检查b站"]
@@ -846,7 +850,7 @@ async def handle_incoming_event(message_str: str):
                     elif CONSECUTIVE_BOT_MSG_COUNT.get(group_id_str, 0) < 3:
                         in_sess = chat_id_str in ACTIVE_SESSIONS
                         tag_str = "余温/会话顺接" if in_sess else "Layer 2 压力爆发"
-                        print(f"💥 [{tag_str}] 群[{group_id}] 压力达标 ({current_pressure:.2f}/{current_threshold:.2f} | 软上限轮次:{soft_turns})，进入 5s 防抖！| {get_current_runtime_status()}")
+                        print(f"💥 [{tag_str}] 群[{group_id}] 压力达标 ({current_pressure:.2f}/{current_threshold:.2f} | 软上限轮次:{soft_turns})，进入 {GROUP_DEBOUNCE_WAIT:.1f}s 防抖！| {get_current_runtime_status()}")
                         trigger_pressure_burst(group_id_str, current_threshold)
                         reset_awake_counter(group_id_str)
                         should_enqueue = True

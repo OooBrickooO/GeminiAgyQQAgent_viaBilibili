@@ -68,12 +68,14 @@ DIM_CN_NAMES = {
 
 
 def _default_mood_state() -> dict:
+    now = time.time()
     return {
         "mood": BASELINE_MOOD,
         "dims": {k: 0.0 for k in DIM_KEYS},
         "last_reason": "",
         "last_source_scene": "",
-        "updated_at": time.time(),
+        "updated_at": now,
+        "reason_updated_at": now,
         "pulse_consumed": True,
         "decay_noted": True,
         "history": [],
@@ -95,7 +97,11 @@ def load_mood_state() -> dict:
                         state["dims"][k] = max(0.0, min(100.0, float(raw_dims.get(k, 0.0))))
                 state["last_reason"] = str(data.get("last_reason", "")).strip()
                 state["last_source_scene"] = str(data.get("last_source_scene", "")).strip()
-                state["updated_at"] = float(data.get("updated_at", time.time()))
+                upd_ts = float(data.get("updated_at", time.time()))
+                state["updated_at"] = upd_ts
+                # 兼容旧状态文件：若无 reason_updated_at 字段则缺省回退至 updated_at
+                raw_reason_ts = data.get("reason_updated_at", None)
+                state["reason_updated_at"] = float(raw_reason_ts) if raw_reason_ts is not None else upd_ts
                 state["pulse_consumed"] = bool(data.get("pulse_consumed", True))
                 state["decay_noted"] = bool(data.get("decay_noted", True))
                 raw_hist = data.get("history", [])
@@ -195,11 +201,13 @@ def apply_gentle_opposite_suppression(
     """
     【锁 2 · 温和对立压制（最高兼容 1 : 0.7 跨极复合）】
     - 暖色系 (happy, calm, sweet, proud) 与冷色系 (worry, sulky, jealous)
-    - 当一侧出现正向有效增长时，对对立侧施加柔和压制，绝不一刀清零。
-    - 1 : 0.7 跨极共存保护：
-      * 允许对立侧最高以主导侧峰值的 0.7 倍共存；
-      * 若对立侧某维高于 0.7 × 主导侧峰值，将其柔缓回压（结合本轮对立侧新增量总和 × 0.32x 与 0.7 倍边界）；
-      * 若原本就在 0.7 × 主导侧峰值以内，则仅受极轻微压制（0.10x 新增量）或保留，保护“嘴硬吃醋但心里甜丝丝”等跨极复合。
+    - 当一侧出现正向有效增长时，对对立侧按 `dom_gain * suppression_ratio`（0.32x）柔和回压，绝不一刀清零，
+      严禁微弱波动直接腰斩高数值主情绪（如 sulky=85 时 happy 仅从 26 涨到 30，sulky 仅温和回落约 1.3 点）。
+    - 1 : 0.7 跨极共存约束：
+      * 仅当增长侧确实成为更强主导极（`dom_peak >= 30.0` 且 `dom_peak >= cur_v`）时，
+        才对超过 `0.7 * dom_peak` 的对立维施加柔缓上限约束（至少扣减 `base_pull`，并柔缓收束至 `coexist_limit` 边界）；
+      * 若对立维本身数值高于增长侧（`cur_v > dom_peak`，即原对立情绪仍是主极），仅按 `dom_gain * suppression_ratio` 柔和回压；
+      * 若对立维原本已在 `0.7 * dom_peak` 以内，则仅在无自身正增长时施加极轻微压制（0.10x）或保留，自然保护跨极复合情绪。
     """
     out = dict(new_dims)
     warm_gain = sum(max(0.0, float(effective_gains.get(k, 0.0))) for k in WARM_DIMS)
@@ -224,24 +232,27 @@ def apply_gentle_opposite_suppression(
     base_pull = dom_gain * suppression_ratio
 
     for ok in opp_keys:
-        # 若该对立维在本轮自身就有正向增长，尊重本轮复合输入，仅检查 0.7 共存边界
         own_gain = float(effective_gains.get(ok, 0.0))
         cur_v = float(out.get(ok, 0.0))
         if cur_v <= 0.0:
             continue
 
-        if cur_v > coexist_limit and dom_peak >= 30.0:
-            # 超过 0.7 × 主导侧峰值：柔缓回压至 coexist_limit 边界内（不低于 coexist_limit * 0.92，严禁清零）
-            target_v = max(coexist_limit, cur_v - max(base_pull, (cur_v - coexist_limit) * 0.75))
-            # 确保若显著超出 0.7 倍峰值，回压到 coexist_limit
-            if target_v > coexist_limit:
-                target_v = coexist_limit
-            out[ok] = round(max(0.0, target_v), 1)
+        if dom_peak >= 30.0 and dom_peak >= cur_v:
+            # 增长侧已成为更强主导极
+            if cur_v > coexist_limit:
+                # 优先按 base_pull 柔和回压；若压制后仍高于 0.7 * dom_peak，则柔缓收束至 coexist_limit 边界内（绝不清零）
+                pulled = cur_v - base_pull
+                target_v = min(pulled, coexist_limit)
+                out[ok] = round(max(0.0, target_v), 1)
+            else:
+                # 原本就在 0.7 倍以内：保护跨极共存，仅在无自身正增长时施加极轻微压制 (0.10x) 且不跌破原值 85%
+                if own_gain <= 0.0:
+                    mild_drop = min(cur_v * 0.15, dom_gain * 0.10)
+                    out[ok] = round(max(0.0, cur_v - mild_drop), 1)
         else:
-            # 原本就在 0.7 倍以内：保护跨极共存，仅在无自身正增长时施加极轻微压制 (0.10x)，且绝不跌破原值的 85%
+            # 对立侧原情绪仍强于增长侧（或增长侧尚未激活），绝不触发 0.7 砍刀，仅按比例温和回压
             if own_gain <= 0.0:
-                mild_drop = min(cur_v * 0.15, dom_gain * 0.10)
-                out[ok] = round(max(0.0, cur_v - mild_drop), 1)
+                out[ok] = round(max(0.0, cur_v - base_pull), 1)
 
     return out
 
@@ -290,6 +301,7 @@ def get_decayed_mood_state() -> tuple[dict, float]:
         "last_reason": raw["last_reason"],
         "last_source_scene": raw["last_source_scene"],
         "updated_at": raw["updated_at"],
+        "reason_updated_at": raw.get("reason_updated_at", raw["updated_at"]),
         "pulse_consumed": raw["pulse_consumed"],
         "decay_noted": raw["decay_noted"],
     }
@@ -381,6 +393,7 @@ def apply_mood_update(
         "last_reason": clean_reason if meaningful_shift else view["last_reason"],
         "last_source_scene": source_scene if meaningful_shift else view["last_source_scene"],
         "updated_at": now if (meaningful_shift or abs(mood_step) >= 0.5 or max_dim_shift >= 1.0) else view["updated_at"],
+        "reason_updated_at": now if meaningful_shift else view.get("reason_updated_at", view["updated_at"]),
         "pulse_consumed": False if meaningful_shift else view["pulse_consumed"],
         "decay_noted": False if meaningful_shift else view["decay_noted"],
         "history": history,
@@ -393,15 +406,17 @@ def build_mood_injection_block(current_scene: str = "", consume_pulse: bool = Tr
     """
     【1.5 极简折中派单行 Prompt 注入】
     彻底删除冗长的多行心理旁白以及“不是非这样不可”等卸力引导，改为极简高密度单行注入：
-    - 若存在 last_reason 且距离记录时间 <= 3600 秒（1 小时）：
+    - 若存在 last_reason 且距离 reason_updated_at <= 3600 秒（1 小时）：
       【当前心情】<映射词>（<极短起因>）
     - 若无起因或已超过 1 小时：
       【当前心情】<映射词>
     """
-    view, dt = get_decayed_mood_state()
+    view, _ = get_decayed_mood_state()
     mood = view["mood"]
     dims = view["dims"]
     last_reason = (view.get("last_reason") or "").strip()
+    reason_ts = float(view.get("reason_updated_at", view.get("updated_at", 0.0)))
+    reason_age_sec = max(0.0, time.time() - reason_ts)
 
     if consume_pulse and not view.get("pulse_consumed", True):
         raw = load_mood_state()
@@ -409,7 +424,7 @@ def build_mood_injection_block(current_scene: str = "", consume_pulse: bool = Tr
         save_mood_state(raw)
 
     mapped_word = lookup_mood_lexicon(mood, dims)
-    if last_reason and dt <= 3600.0:
+    if last_reason and reason_age_sec <= 3600.0:
         return f"【当前心情】{mapped_word}（{last_reason}）"
     return f"【当前心情】{mapped_word}"
 
