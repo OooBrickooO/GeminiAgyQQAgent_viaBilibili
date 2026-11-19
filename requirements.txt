@@ -1,0 +1,7 @@
+mcp
+httpx
+websockets
+bilibili-api-python
+qrcode[pil]
+fastapi
+uvicorn[standard]

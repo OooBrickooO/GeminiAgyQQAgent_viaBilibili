@@ -1,0 +1,40 @@
+# Python 字节码与缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 本地临时缓存与日志
+image_cache/
+*.log
+mcp_activity.log
+
+# 虚拟环境
+.venv/
+venv/
+ENV/
+
+# 临时数据与 IDE 配置
+.vscode/
+.idea/
+*.tmp
+*.zip
+*.db
+*.sqlite
+qzone_history.json
+seen_friend_feeds.json
+chat_state.json
+user_profiles.json
+today_hot_trends.json
+bili_inbox_state.json
+bili_credential.json
+today_bili_feed.json
+seen_bili_videos.json
+mood_state.json
+mid_term_memory.json
+board_games_state.json
+omikuji_daily_state.json
+bili_notes/
+memory_archive/
+thought_logs/
+logs/
+

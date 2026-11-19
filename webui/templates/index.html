@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>星见弥 (Hoshimi Neko) 认知与情绪可视化仪表盘</title>
+  <!-- ECharts 5 依赖 -->
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+  <!-- 核心样式与组件解耦样式 -->
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+</head>
+<body>
+  <!-- 赛博空间粒子星海动态背景 -->
+  <canvas id="starfield-canvas" class="starfield-background"></canvas>
+
+  <div id="app" class="dashboard-layout">
+    
+    <!-- 顶部状态导航栏 -->
+    <header class="top-nav">
+      <div class="nav-left">
+        <div class="bot-avatar-badge">
+          <span class="avatar-star">✨</span>
+          <div class="bot-identity">
+            <h1 class="bot-name">星见弥 <span class="bot-tag">Hoshimi Neko</span></h1>
+            <span class="bot-subtitle">连续情绪流与三层记忆认知全景仪表盘</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="nav-center">
+        <div class="live-status-pill">
+          <span class="pulse-dot"></span>
+          <span id="sys-status-label">核心守护进程</span>
+          <span class="pill-divider">|</span>
+          <span id="sys-mood-badge" class="badge-mood">心境: --</span>
+        </div>
+        <!-- WebSocket 实时推送状态徽标 -->
+        <div id="ws-status-badge" class="ws-badge ws-fallback">
+          <span class="ws-dot"></span>
+          <span>WS 连接中...</span>
+        </div>
+      </div>
+
+      <div class="nav-right">
+        <div class="time-meta">
+          <span id="sys-time">2026-11-02 00:00:00</span>
+          <span id="sys-uptime" class="sub-text">运行时长: 计算中...</span>
+        </div>
+        <div class="refresh-controls">
+          <!-- 纯合成音效切换开关 -->
+          <button id="btn-toggle-sound" class="btn btn-outline" title="切换赛博音效">
+            <span class="icon">🔊</span> <span>音效: 开</span>
+          </button>
+          <button id="btn-toggle-auto-refresh" class="btn btn-outline" title="点击切换自动刷新">
+            <span class="icon">🔄</span> <span id="auto-refresh-text">自动刷新: 开 (5s)</span>
+          </button>
+          <button id="btn-manual-refresh" class="btn btn-primary" title="立刻刷新">
+            刷新
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- 选项卡导航 (含新增的认知与羁绊引力图谱) -->
+    <nav class="tab-bar">
+      <button class="tab-item active" data-tab="tab-overview">
+        <span class="tab-icon">🌟</span> 认知与情绪概览
+      </button>
+      <button class="tab-item" data-tab="tab-graph">
+        <span class="tab-icon">🌌</span> 认知与羁绊拓扑
+      </button>
+      <button class="tab-item" data-tab="tab-affection">
+        <span class="tab-icon">💖</span> 羁绊与好感阶梯
+      </button>
+      <button class="tab-item" data-tab="tab-memory-l3">
+        <span class="tab-icon">🧠</span> L3 永久记忆 (FTS5)
+      </button>
+      <button class="tab-item" data-tab="tab-memory-l2">
+        <span class="tab-icon">⏳</span> L2 温感记忆 (艾宾浩斯)
+      </button>
+      <button class="tab-item" data-tab="tab-whitelist">
+        <span class="tab-icon">🛡️</span> 群聊与白名单管理
+      </button>
+      <button class="tab-item" data-tab="tab-qzone-care">
+        <span class="tab-icon">🔭</span> 空间特关与巡检
+      </button>
+      <button class="tab-item" data-tab="tab-logs">
+        <span class="tab-icon">📜</span> 实时审计日志流
+      </button>
+    </nav>
+
+    <!-- 主体容器 -->
+    <main class="main-content">
+
+      <!-- ================= 选项卡 1: 认知与情绪概览 ================= -->
+      <section id="tab-overview" class="tab-panel active">
+        <!-- 统计核心卡片 -->
+        <div class="stats-grid">
+          <div class="stat-card card-glow-pink">
+            <div class="stat-icon">💖</div>
+            <div class="stat-info">
+              <span class="stat-label">宏观心境基调 (Mood)</span>
+              <div class="stat-val-group">
+                <span id="stat-mood-score" class="stat-number">--</span>
+                <span class="stat-unit">/ 100</span>
+              </div>
+              <span id="stat-mood-trend" class="stat-sub">基准线: 60.0 (5h指数半衰期)</span>
+            </div>
+          </div>
+
+          <div class="stat-card card-glow-blue">
+            <div class="stat-icon">🧠</div>
+            <div class="stat-info">
+              <span class="stat-label">L3 永久铭记事实</span>
+              <div class="stat-val-group">
+                <span id="stat-facts-active" class="stat-number">--</span>
+                <span class="stat-unit">条生效中</span>
+              </div>
+              <span id="stat-facts-superseded" class="stat-sub">0 条已迭代历史事实</span>
+            </div>
+          </div>
+
+          <div class="stat-card card-glow-cyan">
+            <div class="stat-icon">⏳</div>
+            <div class="stat-info">
+              <span class="stat-label">L2 中程温感记忆</span>
+              <div class="stat-val-group">
+                <span id="stat-mid-memories" class="stat-number">--</span>
+                <span class="stat-unit">条近期动态</span>
+              </div>
+              <span class="stat-sub">艾宾浩斯温感衰减与闪回</span>
+            </div>
+          </div>
+
+          <div class="stat-card card-glow-purple">
+            <div class="stat-icon">💬</div>
+            <div class="stat-info">
+              <span class="stat-label">FTS5 全量聊天归档</span>
+              <div class="stat-val-group">
+                <span id="stat-chat-archive" class="stat-number">--</span>
+                <span class="stat-unit">条对话原话</span>
+              </div>
+              <span id="stat-tracked-users" class="stat-sub">已追踪 0 位社交对象</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 情绪可视化核心行 -->
+        <div class="charts-row">
+          <!-- 左侧：24小时心境心电图 -->
+          <div class="glass-card chart-card-large">
+            <div class="card-header">
+              <div class="header-title">
+                <span class="header-icon">📈</span>
+                <h3>心境潮汐与情感心电图 (Mood EKG Timeline)</h3>
+              </div>
+              <span class="card-tag">24h 连续动态</span>
+            </div>
+            <div id="mood-ekg-chart" class="chart-container-large"></div>
+          </div>
+
+          <!-- 右侧：7维细粒度情绪雷达 -->
+          <div class="glass-card chart-card-side">
+            <div class="card-header">
+              <div class="header-title">
+                <span class="header-icon">🕸️</span>
+                <h3>七维微观情绪雷达 (7D Radar)</h3>
+              </div>
+              <span class="card-tag">60min 半衰期</span>
+            </div>
+            <div id="mood-radar-chart" class="chart-container-radar"></div>
+          </div>
+        </div>
+
+        <!-- 详细状态与七维进度行 -->
+        <div class="details-row">
+          <!-- 内心独白与成因卡片 -->
+          <div class="glass-card monologue-card">
+            <div class="card-header">
+              <div class="header-title">
+                <span class="header-icon">💭</span>
+                <h3>此时此刻的第一人称内心来历 (Inner Reason)</h3>
+              </div>
+              <span id="mood-scene-badge" class="badge-scene">场景: 日常陪伴</span>
+            </div>
+            <div class="monologue-content">
+              <div class="quote-symbol">“</div>
+              <p id="mood-last-reason" class="monologue-text">心绪平稳，随顺自然，静静陪在主人身边。</p>
+              <div class="quote-symbol right">”</div>
+            </div>
+            <div class="decay-footer">
+              <div class="decay-meter">
+                <div class="meter-label">
+                  <span>宏观半衰平滑进度 (5h)</span>
+                  <span id="decay-factor-text">衰减比率: 100%</span>
+                </div>
+                <div class="meter-bar-track">
+                  <div id="decay-meter-fill" class="meter-bar-fill" style="width: 100%;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 7维微观数值明细条 -->
+          <div class="glass-card dims-card">
+            <div class="card-header">
+              <div class="header-title">
+                <span class="header-icon">📊</span>
+                <h3>微观情绪实时量度 (Micro Dimensions)</h3>
+              </div>
+              <span class="card-tag">0 ~ 100</span>
+            </div>
+            <div id="dims-bars-container" class="dims-bars-grid">
+              <!-- 由 JS 渲染 7 个维度的动态进度条 -->
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 选项卡 2: 认知与羁绊拓扑图谱 (新特性) ================= -->
+      <section id="tab-graph" class="tab-panel">
+        <div class="glass-card graph-wrapper-card">
+          <div class="card-header">
+            <div class="header-title">
+              <span class="header-icon">🌌</span>
+              <h3>星见弥认知与社交引力网络 (Force-Directed Graph)</h3>
+            </div>
+            <span class="card-tag">支持拖拽、缩放与点击聚焦</span>
+          </div>
+          <div id="mind-graph-chart" class="mind-graph-canvas"></div>
+        </div>
+      </section>
+
+      <!-- ================= 选项卡 3: 羁绊与好感星系 ================= -->
+      <section id="tab-affection" class="tab-panel">
+        <div class="section-toolbar">
+          <div class="tier-summary-badges">
+            <span class="tier-pill tier-pill-bff">💖 挚友 (850+): <b id="count-bff">0</b></span>
+            <span class="tier-pill tier-pill-friend">🤝 朋友稳态区 (500~849): <b id="count-friend">0</b></span>
+            <span class="tier-pill tier-pill-acq">✨ 熟人 (200~499): <b id="count-acq">0</b></span>
+            <span class="tier-pill tier-pill-passerby">🌱 路人 (0~199): <b id="count-passerby">0</b></span>
+            <span class="tier-pill tier-pill-black">⛔ 黑名单: <b id="count-blacklist">0</b></span>
+            <span id="aff-pending-badge" class="tier-pill" style="display:none;border-color:rgba(244,114,182,0.55);color:#f472b6;">💌 待批申请: <b id="count-aff-pending">0</b></span>
+          </div>
+          <div class="filter-controls">
+            <input type="text" id="affection-search-input" class="search-input" placeholder="搜索 QQ 或 昵称...">
+          </div>
+        </div>
+
+        <div class="glass-card" style="padding:0.9rem 1.1rem;margin-bottom:1.1rem;">
+          <div class="search-box-row" style="flex-wrap:wrap;align-items:center;">
+            <span style="font-size:0.85rem;color:#f472b6;font-weight:600;">👑 主人定向调分：</span>
+            <input type="text" id="aff-quick-uid" class="search-input" style="width:155px;" placeholder="目标用户 QQ 号...">
+            <input type="number" step="0.5" id="aff-quick-val" class="search-input" style="width:125px;" placeholder="分值 (如 +20 / -15)">
+            <input type="text" id="aff-quick-reason" class="search-input" style="flex:1;min-width:160px;" placeholder="备注原因（选填）">
+            <button id="btn-aff-quick-delta" class="btn btn-primary">➕/➖ 增减分值</button>
+            <button id="btn-aff-quick-set" class="btn btn-outline">🎯 直接设定</button>
+          </div>
+        </div>
+
+        <div id="affection-users-grid" class="users-grid">
+          <!-- 由 affection_view.js 渲染 -->
+        </div>
+      </section>
+
+      <!-- ================= 选项卡 4: L3 永久记忆 (FTS5) ================= -->
+      <section id="tab-memory-l3" class="tab-panel">
+        <!-- FTS5 毫秒级混合检索模拟器 -->
+        <div class="glass-card search-simulator-card">
+          <div class="card-header">
+            <div class="header-title">
+              <span class="header-icon">⚡</span>
+              <h3>L3 + FTS5 记忆雷达毫秒级检索模拟器</h3>
+            </div>
+            <span id="search-latency-badge" class="badge-latency">耗时: 0.0ms</span>
+          </div>
+          <div class="search-box-row">
+            <input type="text" id="fts-query-input" class="search-input search-input-large" placeholder="输入任意关键词（如：米哈游、大四、约定、技术栈）测试脑内召回...">
+            <button id="btn-run-fts-search" class="btn btn-primary">
+              <span class="icon">🔍</span> 毫秒检索测试
+            </button>
+          </div>
+          <div id="fts-search-result-box" class="search-result-output" style="display: none;">
+            <!-- 检索结果预览 -->
+          </div>
+        </div>
+
+        <!-- 永久事实分类与列表 -->
+        <div class="facts-section-header">
+          <div class="category-pills" id="facts-category-pills">
+            <button class="pill-btn active" data-cat="all">全部事实</button>
+            <button class="pill-btn" data-cat="user_fact">👤 人物画像</button>
+            <button class="pill-btn" data-cat="shared_promise">🤝 专属约定</button>
+            <button class="pill-btn" data-cat="group_meme">🎉 群共同记忆/群梗</button>
+            <button class="pill-btn" data-cat="milestone">🏆 情感里程碑</button>
+          </div>
+          <div class="facts-status-select">
+            <label>状态过滤：</label>
+            <select id="facts-status-filter" class="select-dropdown">
+              <option value="all">全部状态</option>
+              <option value="active" selected>生效中 (Active)</option>
+              <option value="superseded">已迭代历史 (Superseded)</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="facts-list-container" class="facts-grid">
+          <!-- 由 memory_view.js 渲染 -->
+        </div>
+      </section>
+
+      <!-- ================= 选项卡 5: L2 温感记忆 (艾宾浩斯) ================= -->
+      <section id="tab-memory-l2" class="tab-panel">
+        <div class="glass-card intro-banner">
+          <div class="banner-icon">🌊</div>
+          <div class="banner-text">
+            <h4>L2 中程温感记忆机制 (Ebbinghaus Decay)</h4>
+            <p>基于艾宾浩斯遗忘半衰期公式 \( A(t) = A_0 \cdot 2^{-\Delta t / H} \)。刚发生或高频被成功闪回强化的记忆呈温暖高亮；随着时间推移自然冷却淡出，确保对话真实有温度且不累赘。</p>
+          </div>
+        </div>
+
+        <div id="mid-term-list-container" class="mid-term-grid">
+          <!-- 由 memory_view.js 渲染 -->
+        </div>
+      </section>
+
+      <!-- ================= 选项卡 6: 群聊与白名单管理 ================= -->
+      <section id="tab-whitelist" class="tab-panel">
+        <div class="section-toolbar">
+          <div class="tier-summary-badges">
+            <span class="tier-pill tier-pill-acq">🟢 已启用活跃群: <b id="wl-count-active">0</b></span>
+            <span class="tier-pill tier-pill-friend">📋 已识别总群数: <b id="wl-count-total">0</b></span>
+            <span class="tier-pill tier-pill-bff">🤖 免压群Bot: <b id="wl-count-bots">0</b></span>
+            <span id="wl-napcat-status" class="card-tag">同步中...</span>
+          </div>
+          <div class="filter-controls">
+            <input type="text" id="whitelist-group-search" class="search-input" placeholder="过滤群名或群号...">
+          </div>
+        </div>
+
+        <div class="wl-layout-grid">
+          <!-- 左侧：QQ 群活跃白名单开关矩阵 -->
+          <div class="glass-card wl-panel-card">
+            <div class="card-header">
+              <div class="header-title">
+                <span class="header-icon">💬</span>
+                <h3>QQ 群活跃与呼吸冒泡白名单 (allowed_groups.json)</h3>
+              </div>
+              <span class="card-tag">热更新秒级生效</span>
+            </div>
+            <div class="search-box-row wl-input-row">
+              <input type="text" id="input-add-whitelist-group" class="search-input search-input-large" placeholder="手动输入新 QQ 群号加入活跃白名单...">
+              <button id="btn-add-whitelist-group" class="btn btn-primary">
+                <span class="icon">➕</span> 添加群白名单
+              </button>
+            </div>
+            <div id="whitelist-groups-grid" class="wl-groups-list">
+              <!-- 由 whitelist_view.js 渲染 -->
+            </div>
+          </div>
+
+          <!-- 右侧：群内第三方 Bot 免压白名单管理 -->
+          <div class="glass-card wl-panel-card">
+            <div class="card-header">
+              <div class="header-title">
+                <span class="header-icon">🤖</span>
+                <h3>群内第三方 Bot 免压白名单 (bot_whitelist.json)</h3>
+              </div>
+              <span class="card-tag">防人机互聊套娃</span>
+            </div>
+            <p class="wl-panel-desc">加入免压白名单的群内其他机器人发言将不计入社交熵话题压力，且达到软上限后不再被其 @ 唤醒。</p>
+            <div class="search-box-row wl-input-row">
+              <input type="text" id="input-bot-whitelist-target" class="search-input" style="flex:1;" placeholder="Bot 的 QQ 号或群内昵称...">
+              <input type="text" id="input-bot-whitelist-name" class="search-input" style="width:140px;" placeholder="备注名 (选填)">
+              <button id="btn-add-bot-whitelist" class="btn btn-primary">
+                <span class="icon">➕</span> 加入免压
+              </button>
+            </div>
+            <div id="bot-whitelist-grid" class="wl-bots-list">
+              <!-- 由 whitelist_view.js 渲染 -->
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 选项卡 7: QQ 空间特别关注与巡检 ================= -->
+      <section id="tab-qzone-care" class="tab-panel">
+        <div class="section-toolbar">
+          <div class="tier-summary-badges">
+            <span class="tier-pill tier-pill-bff">⭐ 生效特关: <b id="qc-count-total">0</b></span>
+            <span class="tier-pill tier-pill-friend">💖 挚友自动特关: <b id="qc-count-bff">0</b></span>
+            <span class="tier-pill tier-pill-acq">📌 手动/弥酱自加: <b id="qc-count-manual">0</b></span>
+            <span id="qc-today-slots" class="card-tag">今日待巡检</span>
+          </div>
+          <div class="filter-controls">
+            <input type="text" id="qzone-candidate-search" class="search-input" placeholder="过滤候选好友昵称或QQ...">
+          </div>
+        </div>
+
+        <div class="wl-layout-grid">
+          <div class="glass-card wl-panel-card">
+            <div class="card-header">
+              <div class="header-title">
+                <span class="header-icon">⭐</span>
+                <h3>空间特别关注（特关）名单</h3>
+              </div>
+              <span class="card-tag">主人与挚友(>=850)默认开启</span>
+            </div>
+            <div class="search-box-row wl-input-row">
+              <input type="text" id="input-qzone-care-uid" class="search-input" style="width:150px;" placeholder="好友 QQ 号...">
+              <input type="text" id="input-qzone-care-nick" class="search-input" style="width:120px;" placeholder="昵称备注">
+              <input type="text" id="input-qzone-care-reason" class="search-input" style="flex:1;" placeholder="加入特关理由（选填）">
+              <button id="btn-add-qzone-care" class="btn btn-primary">
+                <span class="icon">➕</span> 加入特关
+              </button>
+            </div>
+            <div id="qzone-care-list" class="wl-bots-list">
+              <!-- 由 qzone_care_view.js 渲染 -->
+            </div>
+          </div>
+
+          <div class="glass-card wl-panel-card">
+            <div class="card-header">
+              <div class="header-title">
+                <span class="header-icon">🔭</span>
+                <h3>候选熟人快捷特关与巡检足迹</h3>
+              </div>
+              <span class="card-tag">00:00~06:00 静默</span>
+            </div>
+            <p class="wl-panel-desc">每日 08:30 / 14:30 / 20:30 三档巡检：特关好友每轮必看，熟人(>=200)每轮抽样追踪；生病低落动态绝不点赞。</p>
+            <div id="qzone-candidate-list" class="wl-bots-list" style="max-height:240px;overflow-y:auto;margin-bottom:14px;">
+              <!-- 由 qzone_care_view.js 渲染 -->
+            </div>
+            <div class="card-header" style="margin-top:8px;">
+              <div class="header-title">
+                <span class="header-icon">📜</span>
+                <h3>最近空间巡检日志</h3>
+              </div>
+            </div>
+            <div id="qzone-patrol-logs" class="wl-bots-list" style="max-height:220px;overflow-y:auto;">
+              <!-- 由 qzone_care_view.js 渲染 -->
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 选项卡 8: 实时审计日志流 ================= -->
+      <section id="tab-logs" class="tab-panel">
+        <div class="logs-toolbar">
+          <div class="log-type-buttons" id="log-type-buttons">
+            <button class="btn btn-outline active" data-type="all">📑 全部流 (All)</button>
+            <button class="btn btn-outline" data-type="thought">💭 深度思考流 (Thought)</button>
+            <button class="btn btn-outline" data-type="chat">💬 聊天交互流 (Chat)</button>
+            <button class="btn btn-outline" data-type="tool">⚙️ 工具动作流 (Tool)</button>
+            <button class="btn btn-outline" data-type="bili">🏄 B站生态 (Bili)</button>
+            <button class="btn btn-outline" data-type="error">🚨 异常与风控 (Error)</button>
+          </div>
+          <div class="log-actions">
+            <label class="auto-scroll-toggle">
+              <input type="checkbox" id="chk-auto-scroll" checked> 自动滚屏到底部
+            </label>
+            <button id="btn-refresh-logs" class="btn btn-sm btn-outline">立即拉取</button>
+          </div>
+        </div>
+
+        <div class="terminal-card">
+          <div class="terminal-header">
+            <span class="terminal-dots">
+              <span class="dot dot-red"></span>
+              <span class="dot dot-yellow"></span>
+              <span class="dot dot-green"></span>
+            </span>
+            <span id="log-file-title" class="terminal-title">logs/all.log</span>
+            <span id="log-lines-count" class="terminal-badge">0 行</span>
+          </div>
+          <pre id="log-terminal-output" class="terminal-body">正在拉取日志...</pre>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- 底部状态脚标 -->
+    <footer class="bottom-footer">
+      <span>星见弥 (Hoshimi Neko) 认知与情绪可视化仪表盘 · 异地双机高算力协同架构</span>
+      <span class="tailscale-tip">🔒 Tailscale 专网节点: <code>YOUR_EDGE_NODE_IP:8088</code> · 支持 WebSocket 全双工流</span>
+    </footer>
+
+  </div>
+
+  <!-- 解耦的前端业务模块脚本 (按依赖顺序加载) -->
+  <script src="/static/js/starfield.js"></script>
+  <script src="/static/js/sfx.js"></script>
+  <script src="/static/js/api_client.js"></script>
+  <script src="/static/js/mood_view.js"></script>
+  <script src="/static/js/graph_view.js"></script>
+  <script src="/static/js/affection_view.js"></script>
+  <script src="/static/js/memory_view.js"></script>
+  <script src="/static/js/whitelist_view.js"></script>
+  <script src="/static/js/qzone_care_view.js"></script>
+  <script src="/static/js/logs_view.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

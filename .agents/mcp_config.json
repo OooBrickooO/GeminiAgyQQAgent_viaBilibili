@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "qq-agent": {
+      "command": "/home/your_user/qqAgent/venv/bin/python",
+      "args": ["/home/your_user/qqAgent/qq_mcp_server.py"]
+    },
+    "bilibili-agent": {
+      "command": "/home/your_user/qqAgent/venv/bin/python",
+      "args": ["/home/your_user/qqAgent/bili_mcp_server.py"]
+    }
+  }
+}
