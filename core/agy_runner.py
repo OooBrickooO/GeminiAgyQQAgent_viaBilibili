@@ -252,6 +252,7 @@ def get_or_create_active_session(
         "roll_limit": get_rolling_turn_limit(chat_id_str),
         "primary_sender_id": str(sender_id) if sender_id else "",
         "turns_log": [],
+        "sticky_domains": set(),
         "ttl_seconds": ttl,
         "expiry_task": None,
         "afterglow_task": None
@@ -265,6 +266,37 @@ def get_or_create_active_session(
     _schedule_session_expiry(chat_id_str)
     print(f"🌱 [会话激活] 通道 {chat_id_str} 创建全新 agy 会话 (conv_id={new_conv_id[:8]}..., 寿命={int(ttl // 60)}mins)")
     return sess, False
+
+
+def get_session_sticky_domains(chat_id_str: str) -> set[str]:
+    """获取当前活跃会话已激活的粘性工具域集合（7min/10min 会话期内持续保留，滚动轮转不丢失）"""
+    if not chat_id_str:
+        return set()
+    sess = ACTIVE_SESSIONS.get(str(chat_id_str))
+    if not sess:
+        return set()
+    sticky = sess.get("sticky_domains")
+    if isinstance(sticky, (set, list, tuple)):
+        return set(str(d).strip().lower() for d in sticky if str(d).strip())
+    return set()
+
+
+def update_session_sticky_domains(chat_id_str: str, domains) -> set[str]:
+    """将本轮动态命中的扩展工具域沉淀进当前活跃会话的粘性域集合"""
+    if not chat_id_str or not domains:
+        return get_session_sticky_domains(chat_id_str)
+    sess = ACTIVE_SESSIONS.get(str(chat_id_str))
+    if not sess:
+        return set()
+    sticky = sess.get("sticky_domains")
+    if not isinstance(sticky, set):
+        sticky = set(sticky) if isinstance(sticky, (list, tuple)) else set()
+        sess["sticky_domains"] = sticky
+    for d in domains:
+        ds = str(d or "").strip().lower()
+        if ds:
+            sticky.add(ds)
+    return set(sticky)
 
 
 def record_session_turn_completed(

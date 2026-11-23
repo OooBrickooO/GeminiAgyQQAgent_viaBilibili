@@ -18,11 +18,19 @@ from config import MASTER_QQ
 
 # 快速特征识别正则 (0ms 本地嗅探)
 RE_BILI = re.compile(
-    r'(b站|哔哩|bilibili|bv\w{8,}|av\d+|b23\.tv|up主|阿婆主|弹幕|投币|一键三连|视频|小破站|番剧|追番|动态|私信|评论区|关注up|查up|查视频)',
+    r'(b站|哔哩|bilibili|bv\w{8,}|av\d+|b23\.tv|up主|阿婆主|弹幕|投币|一键三连|三连|收藏夹|收藏视频|默认收藏|取消收藏|转发动态|发动态|视频|小破站|番剧|追番|动态|私信|评论区|关注up|查up|查视频)',
+    re.IGNORECASE
+)
+RE_TRENDS = re.compile(
+    r'(热搜|热梗|热榜|流行词|什么梗|啥梗|微博热搜|知乎热榜|时事|新闻|今天有什么大事|吃瓜)',
     re.IGNORECASE
 )
 RE_GROUP_ADMIN = re.compile(
-    r'(解禁|禁言|踢出|群管理|群列表|群成员|拉黑|踢人|解除禁言|热搜|热梗|传话|去群|发到群|给.{1,15}发消息|跟.{1,15}私聊)',
+    r'(解禁|禁言|踢出|群管理|群列表|群成员|拉黑|踢人|解除禁言|好友列表|联系人|传话|去群|发到群|给.{1,15}发消息|跟.{1,15}私聊)',
+    re.IGNORECASE
+)
+RE_QQ_BRIDGE = re.compile(
+    r'(去群|发到群|发给|群里说|群消息|私聊|转告|传话|发qq|发消息给|好友列表|群列表|点歌|放首歌|抽签|御神签|好感|表情包|发语音到)',
     re.IGNORECASE
 )
 RE_SYSTEM_ADMIN = re.compile(
@@ -129,19 +137,88 @@ def route_chat_effort_with_reason(
     sender_str = str(sender_id or "").strip()
 
     # ============================================================
-    # 优先级 0 · 安全拦截自愈重试走 high（确保自愈脱困）
+    # 优先级 0 · 安全拦截自愈重试永走 high（任何通道绝不降档）
     # ============================================================
     if is_retry:
         return "high", "P0_guard:safety_or_silent_retry->high"
 
-    # ============================================================
-    # 优先级 1 · 全局默认极速 low 路由 (gemini-4-hydrogen-low)
-    # 主人要求默认推理模型改为 hydrogen low，避免思考过长导致消息与桌宠吐槽延迟
-    # ============================================================
-    if force_low_override is False:
-        return "medium", "L1_override_medium->medium"
+    resolved_cid = str(chat_id_str or "").strip()
+    if not resolved_cid and is_private and sender_str and sender_str not in ("系统", "0"):
+        resolved_cid = f"private_{sender_str}"
 
-    return "low", "P1_default:hydrogen_low_fast_response->low"
+    # ============================================================
+    # 优先级 0.5 · 桌宠专属独立轨道 (desktop_master 固定走 low，与 QQ 对话彻底隔离)
+    # ============================================================
+    if resolved_cid == "desktop_master":
+        if force_low_override is False:
+            return "medium", "P0_deskpet:override_medium->medium"
+        return "low", "P0_deskpet:desktop_master->low"
+
+    # ============================================================
+    # 优先级 1 · 局部通道级强制 low 开关 (L1：仅对主人手动开启的指定 QQ 对话生效)
+    # ============================================================
+    if force_low_override is True:
+        return "low", f"L1_channel_low_forced({resolved_cid or 'override'})->low"
+    if force_low_override is None and resolved_cid:
+        try:
+            from core.state_manager import is_channel_low_enabled
+            if is_channel_low_enabled(resolved_cid):
+                return "low", f"L1_channel_low_forced({resolved_cid})->low"
+        except Exception:
+            pass
+
+    # ============================================================
+    # 优先级 2 · QQ 默认高质两档路由 (medium 基准 / high 复杂升档，全面禁用自动 low)
+    # ============================================================
+    has_image = (
+        "[图片#" in raw
+        or "[CQ:image" in raw
+        or "[图片#" in ephemeral
+        or "[桌面伴随看屏" in raw
+        or "截图本地绝对路径" in raw
+        or bool(context_has_image)
+    )
+    has_link = bool(RE_URL_LINK.search(pure_no_cq) or (not is_breathe and RE_BILI.search(pure_no_cq)))
+    has_deep_memory = (not is_breathe) and bool(RE_DEEP_MEMORY_CUES.search(pure_no_cq))
+    has_high_complex = (not is_breathe) and bool(RE_HIGH_COMPLEX_OR_SOUL_CUES.search(pure_no_cq))
+    is_long_text = (not is_breathe) and (len(pure_no_cq) >= 45)
+
+    # 注意：区分「已挂载的工具池 (domains)」与「本轮实际命中的重工具意图 (active_heavy_domains)」
+    # 主人私聊常驻了 bili/group_admin/system_admin 工具，其他通道也可能因会话粘性保留着这些域，
+    # 因此只在当前轮次本身命中重工具线索时才触发 high 升档，避免简单闲聊（如“在干嘛”“好滴”）浪费 high 额度。
+    focus_combined = f"{pure_no_cq}\n{ephemeral}"
+    explicit_heavy = set()
+    if not is_breathe and RE_BILI.search(focus_combined):
+        explicit_heavy.add("bili")
+    if not is_breathe and RE_GROUP_ADMIN.search(focus_combined):
+        explicit_heavy.add("group_admin")
+    if not is_breathe and RE_SYSTEM_ADMIN.search(focus_combined):
+        explicit_heavy.add("system_admin")
+    if not is_breathe and RE_DESKPET.search(focus_combined):
+        explicit_heavy.add("deskpet")
+
+    active_heavy_domains = (explicit_heavy & domains) if domains else explicit_heavy
+    non_chat_domains = active_heavy_domains | (domains & {"game"})
+
+    if was_interrupted:
+        if has_image or is_long_text or has_high_complex or active_heavy_domains:
+            return "high", "P1_guard:interrupted_complex->high"
+        return "medium", "P1_guard:interrupted->medium"
+
+    if non_chat_domains or has_deep_memory:
+        if active_heavy_domains or has_image or is_long_text or has_high_complex:
+            return "high", f"P1_guard:domain_or_deep_mem({','.join(sorted(non_chat_domains)) or 'memory'})->high"
+        return "medium", f"P1_guard:domain_or_deep_mem({','.join(sorted(non_chat_domains)) or 'memory'})->medium"
+
+    if has_image or has_link or is_long_text or has_high_complex:
+        if has_image or is_long_text or has_high_complex:
+            return "high", "P1_guard:visual_or_long_or_soul_complex->high"
+        return "medium", "P1_guard:link_or_moderate_complex->medium"
+
+    if is_breathe:
+        return "medium", "P2_breathe:default_medium"
+
+    return "medium", "P3_regular:default_baseline->medium"
 
 
 def route_chat_effort(
@@ -188,66 +265,141 @@ async def route_message_domains(
     is_private: bool = False,
     is_breathe: bool = False,
     force_all: bool = False,
-    chat_id_str: str = ""
+    chat_id_str: str = "",
+    recent_context_text: str = "",
 ) -> list[str]:
     """
-    0ms 本地极速意图路由主入口。
-    返回本次推理应激活的工具领域列表，如: ["chat", "memory", "meme", "bili"]
+    0ms 本地极速意图路由主入口（方案 T1：场景物理分桶 + 近2轮滑窗嗅探 + 会话级域粘性）。
+    返回本次推理应激活的工具领域列表，如: ["bili", "chat", "meme", "memory", "trends"]
     """
     if force_all:
-        return ["chat", "game", "memory", "meme", "bili", "group_admin", "system_admin", "deskpet"]
+        return ["bili", "chat", "deskpet", "game", "group_admin", "meme", "memory", "system_admin", "trends"]
 
     sender_str = str(sender_id).strip()
-    is_master = (sender_str == str(MASTER_QQ)) or (str(chat_id_str) == "desktop_master")
+    cid_str = str(chat_id_str or "").strip()
+    is_deskpet_channel = (cid_str == "desktop_master")
+    is_master = (sender_str == str(MASTER_QQ)) or is_deskpet_channel
     clean_text = (message_text or "").strip()
+    recent_txt = (recent_context_text or "").strip()
+    probe_text = f"{recent_txt}\n{clean_text}".strip() if recent_txt else clean_text
 
-    # 1. 基础保底领域：核心对话、记忆心事与表情包资产（零参数负担，极速响应）
-    matched_domains = set(["chat", "memory", "meme"])
-    if str(chat_id_str) == "desktop_master":
-        matched_domains.add("deskpet")
-
-    # 2. 呼吸场景：默认仅对话+记忆+表情；若涉及B站则动态附加
-    if is_breathe:
-        if RE_BILI.search(clean_text):
-            matched_domains.add("bili")
-        return sorted(list(matched_domains))
+    # 读取当前活跃会话已激活的粘性域（7min/10min 会话期内防追问掉工具）
+    sticky_domains = set()
+    if cid_str and not is_breathe:
+        try:
+            from core.agy_runner import get_session_sticky_domains
+            sticky_domains = get_session_sticky_domains(cid_str)
+        except Exception:
+            sticky_domains = set()
 
     game_active = False
-    if chat_id_str:
+    if cid_str:
         try:
             from toys.board_games import has_active_game
-            game_active = has_active_game(str(chat_id_str))
+            game_active = has_active_game(cid_str)
         except Exception:
             game_active = False
 
-    # 3. 主人专属通道（精准按需分流，杜绝 Schema 膨胀导致思考过载）：
-    # 日常闲聊只给基础对话工具(chat, memory, meme)；命中具体指令才动态激活对应领域
+    def _persist_sticky(newly_hit: set[str]):
+        if cid_str and newly_hit and not is_breathe:
+            try:
+                from core.agy_runner import update_session_sticky_domains
+                update_session_sticky_domains(cid_str, newly_hit)
+            except Exception:
+                pass
+
+    # ============================================================
+    # 桶 1 · 桌宠专属通道 (desktop_master)：纯桌宠物理隔离，不默认混入 QQ 发信工具
+    # ============================================================
+    if is_deskpet_channel:
+        domains = {"deskpet", "memory"}
+        newly_hit = set()
+        if RE_BILI.search(probe_text):
+            newly_hit.add("bili")
+        if RE_TRENDS.search(probe_text):
+            newly_hit.add("trends")
+        if RE_SYSTEM_ADMIN.search(probe_text):
+            newly_hit.add("system_admin")
+        if RE_QQ_BRIDGE.search(probe_text) or RE_GROUP_ADMIN.search(probe_text):
+            newly_hit.update({"chat", "meme"})
+            if RE_GROUP_ADMIN.search(probe_text):
+                newly_hit.add("group_admin")
+        if game_active or RE_GAME.search(probe_text):
+            newly_hit.add("game")
+
+        allowed_sticky = sticky_domains & {"bili", "trends", "system_admin", "chat", "meme", "group_admin", "game"}
+        domains |= allowed_sticky | newly_hit
+        _persist_sticky(newly_hit)
+        return sorted(list(domains))
+
+    # ============================================================
+    # 桶 2 · 主动社交冒泡 (is_breathe)：轻装核心 + trends（涉及 B站则挂 bili）
+    # ============================================================
+    if is_breathe:
+        domains = {"chat", "memory", "meme", "trends"}
+        if RE_BILI.search(probe_text):
+            domains.add("bili")
+        return sorted(list(domains))
+
+    # ============================================================
+    # 桶 3 · 主人私聊专属桶 (private_MASTER)：常驻全套 QQ + B站工具，永不误杀；仅 game/deskpet 按需粘性挂载
+    # ============================================================
+    if is_master and is_private:
+        domains = {"chat", "memory", "meme", "bili", "trends", "group_admin", "system_admin"}
+        newly_hit = set()
+        if game_active or RE_GAME.search(probe_text):
+            newly_hit.add("game")
+        if RE_DESKPET.search(probe_text):
+            newly_hit.add("deskpet")
+
+        allowed_sticky = sticky_domains & {"game", "deskpet"}
+        domains |= allowed_sticky | newly_hit
+        _persist_sticky(newly_hit)
+        return sorted(list(domains))
+
+    # ============================================================
+    # 桶 4 · 主人在群聊中：轻装核心 + trends + 命中即会话粘性保留
+    # ============================================================
     if is_master:
-        master_domains = set(["chat", "memory", "meme"])
-        if str(chat_id_str) == "desktop_master" or RE_DESKPET.search(clean_text):
-            master_domains.add("deskpet")
-        if RE_BILI.search(clean_text):
-            master_domains.add("bili")
-        if RE_GROUP_ADMIN.search(clean_text):
-            master_domains.add("group_admin")
-        if RE_SYSTEM_ADMIN.search(clean_text):
-            master_domains.add("system_admin")
-        if game_active or RE_GAME.search(clean_text):
-            master_domains.add("game")
-        return sorted(list(master_domains))
+        domains = {"chat", "memory", "meme", "trends"}
+        newly_hit = set()
+        if RE_BILI.search(probe_text):
+            newly_hit.add("bili")
+        if RE_GROUP_ADMIN.search(probe_text):
+            newly_hit.add("group_admin")
+        if RE_SYSTEM_ADMIN.search(probe_text):
+            newly_hit.add("system_admin")
+        if game_active or RE_GAME.search(probe_text):
+            newly_hit.add("game")
+        if RE_DESKPET.search(probe_text):
+            newly_hit.add("deskpet")
 
-    # 4. 普通群友与私聊：0ms 本地特征嗅探
-    if RE_BILI.search(clean_text):
-        matched_domains.add("bili")
+        allowed_sticky = sticky_domains & {"bili", "group_admin", "system_admin", "game", "deskpet"}
+        domains |= allowed_sticky | newly_hit
+        _persist_sticky(newly_hit)
+        return sorted(list(domains))
 
-    if game_active or RE_GAME.search(clean_text):
-        matched_domains.add("game")
+    # ============================================================
+    # 桶 5 · 普通群友与好友私聊：trends 独立可用 + 扩展域命中即会话粘性保留
+    # ============================================================
+    domains = {"chat", "memory", "meme"}
+    newly_hit = set()
+    if RE_TRENDS.search(probe_text):
+        newly_hit.add("trends")
+    if RE_BILI.search(probe_text):
+        newly_hit.add("bili")
+    if game_active or RE_GAME.search(probe_text):
+        newly_hit.add("game")
+    if not is_private and RE_GROUP_ADMIN.search(probe_text):
+        newly_hit.add("group_admin")
+    if RE_QZONE_CARE.search(probe_text):
+        newly_hit.add("system_admin")
 
-    if not is_private and RE_GROUP_ADMIN.search(clean_text):
-        matched_domains.add("group_admin")
-
-    if RE_QZONE_CARE.search(clean_text):
-        matched_domains.add("system_admin")
+    allowed_non_master_sticky = {"trends", "bili", "game", "system_admin"}
+    if not is_private:
+        allowed_non_master_sticky.add("group_admin")
+    domains |= (sticky_domains & allowed_non_master_sticky) | newly_hit
+    _persist_sticky(newly_hit)
 
     # 敏感写入(publish)与移出特关等在 tools/qzone_tools.py 底层仍受 AGY_CALLER_ID == MASTER_QQ 硬权限锁保护
-    return sorted(list(matched_domains))
+    return sorted(list(domains))

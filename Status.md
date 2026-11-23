@@ -1,6 +1,6 @@
 # GeminiAgyQQAgent — 系统架构、部署参考与演进全景 (`Status.md`)
 
-> **版本基线**: 星见弥 (Hoshimi Mi) V5.4.4  
+> **版本基线**: 星见弥 (Hoshimi Mi) V5.4.6  
 > **文档定位**: 本文档汇总了本项目的完整系统架构、核心模块职责、**自用部署拓扑参考与单机改造提醒**、关键排错经验及版本演进记录。
 
 ---
@@ -150,8 +150,10 @@
 
 ---
 
-## 📜 五、主要版本演进摘要 (V3.0 – V5.4.4)
+## 📜 五、主要版本演进摘要 (V3.0 – V5.4.6)
 
+- **V5.4.6**：MCP 工具暴露机制方案 T1 升级——`private_MASTER` / `desktop_master` 场景物理分桶隔离（解耦工具池与思考档位）、`sticky_domains` 会话级粘性 + 近 2 轮滑窗意图嗅探，并将 `trends` 热搜查梗域从 `group_admin` 独立解耦。
+- **V5.4.5**：桌宠通道 (`desktop_master -> low`) 与 QQ 对话（`medium/high` + 局部 `L1` 开关）思考深度彻底分轨；好友申请自动审批改为纯本地 `0-LLM` 秒发迎新与汇报。
 - **V5.4.4**：回归高清 PNG 立绘物理引擎；新增 Win32 窗口上沿 `ledges` 识别与 2B 主动爬窗/被拎放蹲窗体验；装扮页热开关 `perchWindows` 与 `hideFromCapture`。
 - **V5.4.3**：`CategorizedStreamTee` 与工具日志源头分流，DeskPet 全量日志落盘 `logs/deskpet.log` 并支持 `python log.py deskpet`，主滚动控制台零干扰。
 - **V5.4.2**：桌宠「中文气泡 + 日语配音 (`ja_voice`)」音画分离与纯中文防误读拦截；识图看屏 100% 配音 + 日常互动低概率配音。

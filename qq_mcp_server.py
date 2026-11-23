@@ -322,7 +322,7 @@ if is_domain_enabled("memory"):
 
 
 # ============================================================
-# 3. 群聊治理与时事域 (group_admin) — 禁言惩戒、群列表与时事热梗（群白名单与Bot白名单已迁移至WebUI）
+# 3. 群聊治理域 (group_admin) — 禁言惩戒与联系人查询（群白名单与Bot白名单已迁移至WebUI）
 # ============================================================
 if is_domain_enabled("group_admin"):
 
@@ -366,6 +366,11 @@ if is_domain_enabled("group_admin"):
             f_res = await get_friend_list_impl()
             return f"【群聊列表】\n{g_res}\n\n【好友列表】\n{f_res}"
 
+
+# ============================================================
+# 3.5. 时事热搜与网络热梗域 (trends) — 从 group_admin 解耦，私聊/群聊/桌宠均可独立启用
+# ============================================================
+if is_domain_enabled("trends") or is_domain_enabled("group_admin"):
 
     @mcp.tool()
     async def query_community_trends(action: str = "trends", keyword: str = "") -> str:

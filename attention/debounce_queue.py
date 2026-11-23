@@ -301,12 +301,26 @@ async def _trigger_ai_impl(
 
     from core.intent_router import route_message_domains, route_chat_effort_with_reason
     merged_msg_text = "\n".join(messages_list or [combined_message])
+
+    def _build_recent_route_context() -> str:
+        pieces = []
+        for t in (sess.get("turns_log") or [])[-2:]:
+            for um in (t.get("user_messages") or []):
+                s_um = str(um or "").strip()
+                if s_um:
+                    pieces.append(s_um)
+        if ephemeral_context:
+            pieces.append(str(ephemeral_context).strip())
+        return "\n".join(pieces)
+
+    recent_route_ctx = _build_recent_route_context()
     target_domains = await route_message_domains(
         message_text=merged_msg_text,
         sender_id=str(sender_id),
         is_private=is_private,
         is_breathe=is_breathe,
-        chat_id_str=chat_id_str
+        chat_id_str=chat_id_str,
+        recent_context_text=recent_route_ctx,
     )
     soft_turns = get_group_soft_cap_turns(str(group_id)) if (not is_private and group_id) else 0
     # 仅检查本轮最新消息 (merged_msg_text / messages_list) 与 ephemeral_context 是否含图片，
@@ -369,7 +383,8 @@ async def _trigger_ai_impl(
             sender_id=str(sender_id),
             is_private=is_private,
             is_breathe=is_breathe,
-            chat_id_str=chat_id_str
+            chat_id_str=chat_id_str,
+            recent_context_text=_build_recent_route_context(),
         )
         probe_now = f"{merged_now}\n{ephemeral_context or ''}"
         has_img_now = ("[图片#" in probe_now) or ("[CQ:image" in probe_now)

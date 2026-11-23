@@ -106,18 +106,18 @@ if not os.path.exists(AGY_EXECUTABLE):
     AGY_EXECUTABLE = _cand if os.path.exists(_cand) else ("/usr/local/bin/agy" if os.path.exists("/usr/local/bin/agy") else "agy")
 
 AGY_MODEL_FAMILY = "gemini-4-hydrogen"
-DEFAULT_AGY_MODEL = f"{AGY_MODEL_FAMILY}-low"
+DEFAULT_AGY_MODEL = f"{AGY_MODEL_FAMILY}-high"
 
 # ============================================================
 # 3.1. 各通道分级思考深度 (Effort 分级控制，严禁使用 xhigh/Extra)
 # ============================================================
-CHAT_AGY_EFFORT = "low"        # 前台主对话默认极速深度 (gemini-4-hydrogen-low)，确保消息与桌宠吐槽秒级响应
+CHAT_AGY_EFFORT = "medium"     # 前台主对话常规基准深度（QQ默认 medium/high，仅局部开关通道或桌宠 desktop_master 走 low）
 BILI_AGY_EFFORT = "medium"     # B站专属摸鱼冲浪（单视频精看结构化手账评分与热梗提炼，medium 兼顾精度与额度）
 ROUTER_AGY_EFFORT = "low"      # 话前辅助分类参考
-OBSERVER_AGY_EFFORT = "low"    # 后台事后内省观察者（好感共鸣/情绪跃迁/三层记忆抽取与核销）
+OBSERVER_AGY_EFFORT = "medium" # 后台事后内省观察者（好感共鸣/情绪跃迁/三层记忆抽取与核销）
 BACKGROUND_AGY_EFFORT = "low"  # 每日记忆总结等夜间批处理任务
 
-DEFAULT_AGY_EFFORT = CHAT_AGY_EFFORT  # 默认兜底兼容 (low)
+DEFAULT_AGY_EFFORT = CHAT_AGY_EFFORT  # 默认兜底兼容 (medium)
 ALLOWED_AGY_EFFORTS = ("low", "medium", "high")
 
 
