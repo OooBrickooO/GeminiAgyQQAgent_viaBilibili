@@ -11,13 +11,14 @@ core/log_manager.py — 弥酱多通道流式日志分流与审计中心
      * logs/bili.log      - B站冲浪生态 (视频摸鱼、打分、手账、安利)
      * logs/tool.log      - MCP工具动作执行 (发信、发图、点赞、评论等实际动作)
      * logs/error.log     - 告警与异常 (错误、超时、风控拦截)
+     * logs/deskpet.log   - 桌宠专属日志（不进入滚动控制台与 all.log）
 2. 自动单文件容量滚动保护 (默认单文件上限 5MB)，防止占满硬盘空间。
 """
 import os
 import sys
 import re
 import datetime
-from config import BASE_DIR
+from config import BASE_DIR, deskpet_log, is_deskpet_log_line
 
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
@@ -42,30 +43,44 @@ class CategorizedStreamTee:
         self.buffer = ""
 
     def write(self, data):
-        # 1. 100% 优先透传至原 stream (确保 journalctl -u qqagent 绝对正常且无延迟)
-        try:
-            self.original_stream.write(data)
-            self.original_stream.flush()
-        except Exception:
-            pass
-
-        # 2. 累积按行分流
+        # 按行缓冲分流：DeskPet 专属行仅落盘 logs/deskpet.log，其余行保持 100% 透传原流与分类写入
         try:
             self.buffer += str(data)
             if "\n" in self.buffer:
                 lines = self.buffer.split("\n")
                 self.buffer = lines[-1]
-                complete_lines = lines[:-1]
-                for line in complete_lines:
-                    self._dispatch_line(line)
+                for line in lines[:-1]:
+                    self._handle_line(line)
         except Exception:
             pass
+        return len(data) if isinstance(data, str) else 0
+
+    def _handle_line(self, line: str):
+        if is_deskpet_log_line(line):
+            deskpet_log(line)
+            if PATTERNS["error"].search(line):
+                clean = line.strip()
+                if clean:
+                    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    self._write_to_file("error.log", f"[{now_str}] {clean}")
+            return
+
+        try:
+            self.original_stream.write(line + "\n")
+            self.original_stream.flush()
+        except Exception:
+            pass
+
+        self._dispatch_line(line)
 
     def flush(self):
         try:
             self.original_stream.flush()
         except Exception:
             pass
+
+    def __getattr__(self, name):
+        return getattr(self.original_stream, name)
 
     def _write_to_file(self, filename: str, line: str):
         filepath = os.path.join(LOGS_DIR, filename)

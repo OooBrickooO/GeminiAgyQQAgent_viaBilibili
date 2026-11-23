@@ -84,12 +84,19 @@ async def inspect_image_impl(img_id: str, question: str = "") -> str:
         info = IMAGE_VAULT.get(clean_id, {})
         nick = info.get("sender_nick", "群友")
         rel = info.get("relation", "[群友]")
+        deskpet_voice_rule = (
+            "\n🔊【桌宠识图必配日语语音铁律】：当前为桌宠识图回合！看完图片后调用 `pet_say` 回复主人时，"
+            "必须传入 `voice=True`，`script` 写中文气泡台词（带【动作, 表情】），并务必在 `ja_voice` 参数填入对应的地道二次元猫娘日语配音台词！"
+            if os.environ.get("QQ_LOCKED_TARGET_TYPE", "").strip() == "deskpet"
+            else ""
+        )
 
         return (
             f"=== 成功检索并下载图片 [{clean_id}] ===\n"
             f"- 发送者: {rel}{nick}\n"
             f"- 图片本地绝对路径: {local_path}\n"
-            f"💡【视觉查看指引】：请立刻调用系统内置的 view_file 工具传入该绝对路径（view_file(AbsolutePath='{local_path}')），利用系统多模态视觉能力看清画面中展示的文字、人物、游戏战绩或梗图细节，随后结合群聊语境自然吐槽或回复喵！"
+            f"💡【视觉查看指引】：请立刻调用系统内置的 view_file 工具传入该绝对路径（view_file(AbsolutePath='{local_path}')），"
+            f"利用系统多模态视觉能力看清画面中展示的文字、人物、游戏战绩或梗图细节，随后结合语境自然吐槽或回复喵！{deskpet_voice_rule}"
         )
     except Exception as e:
         return f"查看图片异常: {str(e)}"

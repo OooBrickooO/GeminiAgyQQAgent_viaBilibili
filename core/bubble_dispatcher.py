@@ -7,6 +7,8 @@ core/bubble_dispatcher.py — 常驻守护进程异步气泡连发调度器 (1C-
 - 气泡 2~N 留在常驻守护进程后台按拟真打字时延依次吐出，不因 agy 子进程退出而丢失后续气泡。
 """
 import json
+import time
+import uuid
 import asyncio
 from config import INTERNAL_BUBBLE_PORT, NAPCAT_TOKEN
 from core.napcat_client import send_group_msg_raw, send_private_msg_raw
@@ -14,6 +16,54 @@ from core.napcat_client import send_group_msg_raw, send_private_msg_raw
 CHANNEL_QUEUES: dict[str, asyncio.Queue] = {}
 CHANNEL_WORKERS: dict[str, asyncio.Task] = {}
 _DISPATCHER_SERVER = None
+
+# --- DeskPet 反向长轮询命令桥 (穿透 Windows 防火墙，无需放行入站 7797 端口即可双向通信) ---
+DESKPET_LAST_STATE: dict = {}
+DESKPET_LAST_SEEN: float = 0.0
+DESKPET_PENDING_CMDS: list[dict] = []
+DESKPET_CMD_WAITERS: dict[str, dict] = {}
+DESKPET_POLL_WAKE: asyncio.Event | None = None
+
+
+def _get_poll_wake() -> asyncio.Event:
+    global DESKPET_POLL_WAKE
+    if DESKPET_POLL_WAKE is None:
+        DESKPET_POLL_WAKE = asyncio.Event()
+    return DESKPET_POLL_WAKE
+
+
+async def enqueue_deskpet_proxy_cmd(method: str, path: str, payload: dict = None, timeout: float = 20.0) -> dict:
+    """将发往 DeskPet 的 /api/mcp/* 请求放入反向轮询队列，等待 Windows DeskPet 客户端拉取并回传执行结果"""
+    global DESKPET_LAST_STATE, DESKPET_LAST_SEEN
+    now = time.time()
+    if now - DESKPET_LAST_SEEN > 18.0:
+        return {"ok": False, "offline": True, "error": "Windows 桌宠客户端 (DeskPet) 当前未连接反向通道"}
+
+    if method.upper() == "GET" and path == "/api/mcp/state" and DESKPET_LAST_STATE:
+        return DESKPET_LAST_STATE
+
+    cmd_id = uuid.uuid4().hex
+    evt = asyncio.Event()
+    waiter = {"event": evt, "result": None}
+    DESKPET_CMD_WAITERS[cmd_id] = waiter
+    DESKPET_PENDING_CMDS.append({
+        "cmd_id": cmd_id,
+        "method": method.upper(),
+        "path": path,
+        "payload": payload or {},
+    })
+    _get_poll_wake().set()
+
+    try:
+        await asyncio.wait_for(evt.wait(), timeout=max(1.5, float(timeout)))
+        res = waiter.get("result")
+        if isinstance(res, dict):
+            return res
+        return {"ok": False, "error": "empty_proxy_result"}
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": f"等待桌宠客户端响应超时 ({timeout}s)"}
+    finally:
+        DESKPET_CMD_WAITERS.pop(cmd_id, None)
 
 
 async def _channel_worker(chan_key: str):
@@ -99,12 +149,50 @@ async def _handle_http_client(reader: asyncio.StreamReader, writer: asyncio.Stre
         content_len = int(headers.get("content-length", "0") or "0")
         body_bytes = b""
         if content_len > 0:
-            body_bytes = await asyncio.wait_for(reader.readexactly(content_len), timeout=3.0)
+            body_bytes = await asyncio.wait_for(reader.readexactly(content_len), timeout=8.0)
 
         auth = headers.get("authorization", "")
         if auth != f"Bearer {NAPCAT_TOKEN}":
             status_code = 401
             resp_body = {"ok": False, "error": "unauthorized"}
+        elif method == "POST" and path == "/deskpet_event":
+            payload = json.loads(body_bytes.decode("utf-8"))
+            from attention.debounce_queue import handle_deskpet_event
+            asyncio.create_task(handle_deskpet_event(payload))
+            resp_body = {"ok": True, "message": "deskpet_event_accepted"}
+        elif method == "POST" and path == "/deskpet_poll":
+            global DESKPET_LAST_STATE, DESKPET_LAST_SEEN
+            payload = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            if isinstance(payload.get("state"), dict):
+                DESKPET_LAST_STATE = payload["state"]
+            DESKPET_LAST_SEEN = time.time()
+            if not DESKPET_PENDING_CMDS:
+                wake = _get_poll_wake()
+                wake.clear()
+                try:
+                    await asyncio.wait_for(wake.wait(), timeout=2.5)
+                except asyncio.TimeoutError:
+                    pass
+            DESKPET_LAST_SEEN = time.time()
+            cmds = list(DESKPET_PENDING_CMDS)
+            DESKPET_PENDING_CMDS.clear()
+            resp_body = {"ok": True, "commands": cmds}
+        elif method == "POST" and path == "/deskpet_result":
+            payload = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            DESKPET_LAST_SEEN = time.time()
+            cmd_id = str(payload.get("cmd_id", ""))
+            waiter = DESKPET_CMD_WAITERS.get(cmd_id)
+            if waiter:
+                waiter["result"] = payload.get("result")
+                waiter["event"].set()
+            resp_body = {"ok": True}
+        elif method == "POST" and path == "/deskpet_proxy":
+            payload = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            p_method = str(payload.get("method", "POST"))
+            p_path = str(payload.get("path", "/api/mcp/state"))
+            p_body = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+            p_timeout = float(payload.get("timeout", 20.0))
+            resp_body = await enqueue_deskpet_proxy_cmd(p_method, p_path, p_body, timeout=p_timeout)
         elif method != "POST" or path != "/enqueue_bubbles":
             status_code = 404
             resp_body = {"ok": False, "error": "not_found"}
@@ -151,7 +239,7 @@ async def start_bubble_dispatcher():
     if _DISPATCHER_SERVER is not None:
         return
     try:
-        _DISPATCHER_SERVER = await asyncio.start_server(_handle_http_client, "127.0.0.1", INTERNAL_BUBBLE_PORT)
-        print(f"🫧 [异步气泡调度器] 已在 127.0.0.1:{INTERNAL_BUBBLE_PORT} 就绪 (1C-1 非阻塞连发启用)")
+        _DISPATCHER_SERVER = await asyncio.start_server(_handle_http_client, "0.0.0.0", INTERNAL_BUBBLE_PORT)
+        print(f"🫧 [异步气泡与跨机事件网关] 已在 0.0.0.0:{INTERNAL_BUBBLE_PORT} 就绪 (1C-1 非阻塞连发 & 跨机事件启用，伴侣端日志独立见 logs/deskpet.log)")
     except OSError as e:
         print(f"⚠️ [异步气泡调度器] 端口 {INTERNAL_BUBBLE_PORT} 绑定失败（将自动回退内联连发）: {e}")

@@ -85,6 +85,12 @@
       <button class="tab-item" data-tab="tab-qzone-care">
         <span class="tab-icon">🔭</span> 空间特关与巡检
       </button>
+      <button class="tab-item" data-tab="tab-libido">
+        <span class="tab-icon">🔥</span> 性欲面板 (Libido)
+      </button>
+      <button class="tab-item" data-tab="tab-deskpet">
+        <span class="tab-icon">🐾</span> 桌宠与屏幕 (DeskPet)
+      </button>
       <button class="tab-item" data-tab="tab-logs">
         <span class="tab-icon">📜</span> 实时审计日志流
       </button>
@@ -382,6 +388,31 @@
             </div>
           </div>
         </div>
+
+        <!-- 局部对话通道 Low 强度开关面板 (1C + L1) -->
+        <div class="glass-card wl-panel-card" style="margin-top: 20px;">
+          <div class="card-header">
+            <div class="header-title">
+              <span class="header-icon">⚡</span>
+              <h3>局部对话 Low 强度开关（默认全频道 Medium / High，仅作用于开启的单个对话）</h3>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span class="card-tag">当前已开启: <b id="low-effort-enabled-count">0</b> 个对话</span>
+              <button id="btn-clear-all-low-effort" class="btn btn-sm btn-outline">一键全部恢复默认</button>
+            </div>
+          </div>
+          <p class="wl-panel-desc">仅作用于前台对话的局部通道（例如仅对某个私聊或指定群开启强制 low，其他群聊、私聊及后台任务不受影响）。也可由主人在对应聊天窗口直接发送「开启low / 关闭low / low状态」。</p>
+          <div class="search-box-row wl-input-row">
+            <input type="text" id="input-low-effort-chatid" class="search-input" style="flex:1;" placeholder="手动指定通道 ID（如 private_YOUR_MASTER_QQ 或 group_123456）...">
+            <input type="text" id="input-low-effort-label" class="search-input" style="width:160px;" placeholder="备注名 (选填)">
+            <button id="btn-enable-low-effort" class="btn btn-primary">
+              <span class="icon">⚡</span> 开启局部 Low
+            </button>
+          </div>
+          <div id="low-effort-channels-grid" class="wl-groups-list">
+            <!-- 由 whitelist_view.js 渲染 -->
+          </div>
+        </div>
       </section>
 
       <!-- ================= 选项卡 7: QQ 空间特别关注与巡检 ================= -->
@@ -445,7 +476,254 @@
         </div>
       </section>
 
-      <!-- ================= 选项卡 8: 实时审计日志流 ================= -->
+      <!-- ================= 选项卡 8: 性欲面板 (dsh-libido-panel 0和谐原生版) ================= -->
+      <section id="tab-libido" class="tab-panel">
+        <div class="section-toolbar">
+          <div class="tier-summary-badges">
+            <span class="tier-pill tier-pill-bff">🔥 当前数值: <b id="libido-val-num">--</b> / 100</span>
+            <span class="tier-pill tier-pill-friend">🎭 当前档位: <b id="libido-tier-badge">--</b></span>
+            <span class="tier-pill tier-pill-acq">🌙 周期: <b id="libido-season-badge">--</b></span>
+            <span class="tier-pill">🔓 已授权人数: <b id="libido-users-count">1</b></span>
+          </div>
+          <div class="filter-controls" style="display:flex;gap:14px;align-items:center;">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+              <input type="checkbox" id="chk-libido-global-enabled" checked> <span>启用面板</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+              <input type="checkbox" id="chk-libido-private-only" checked> <span>仅私聊生效 (防群泄露)</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="wl-layout-grid">
+          <!-- 左侧：实时曲线 + 快捷控制 + 实时提示词预览 -->
+          <div class="glass-card wl-panel-card">
+            <div class="card-header">
+              <div class="header-title">
+                <span class="header-icon">📈</span>
+                <h3>72 小时波动曲线与快捷控制</h3>
+              </div>
+              <span class="card-tag">0和谐原版规则</span>
+            </div>
+            <div id="libido-curve-chart" style="width:100%;height:230px;margin-bottom:14px;"></div>
+
+            <div class="search-box-row wl-input-row" style="flex-wrap:wrap;gap:8px;">
+              <input type="number" id="input-libido-set-val" class="search-input" style="width:110px;" min="0" max="100" placeholder="设值 0-100">
+              <button id="btn-libido-set-val" class="btn btn-primary">直接调值</button>
+              <button id="btn-libido-resolve" class="btn btn-outline">✨ 解决一次 (归位)</button>
+              <button id="btn-libido-wake" class="btn btn-outline">🌅 手动记睡醒</button>
+            </div>
+
+            <div style="margin:10px 0 6px;font-size:13px;opacity:0.85;">快捷触发事件（同日正向 100%→75%→50%→25% 递减）：</div>
+            <div id="libido-preset-buttons" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;"></div>
+
+            <div class="search-box-row wl-input-row" style="gap:8px;">
+              <input type="number" id="input-libido-baseline" class="search-input" style="width:95px;" min="0" max="100" title="初始值 baseline" placeholder="初始值">
+              <input type="number" id="input-libido-season-day" class="search-input" style="width:95px;" min="1" max="28" title="发情期每月起始日" placeholder="周期起始日">
+              <input type="number" id="input-libido-season-len" class="search-input" style="width:80px;" min="1" max="7" title="持续天数" placeholder="天数">
+              <button id="btn-libido-save-settings" class="btn btn-sm btn-outline">保存周期/初始值</button>
+            </div>
+
+            <div style="margin-top:12px;">
+              <div style="font-size:13px;opacity:0.85;margin-bottom:6px;">📡 当前实时注入给模型的指令预览（仅对已授权用户生效）：</div>
+              <pre id="libido-moodline-preview" style="background:rgba(0,0,0,0.28);padding:10px 12px;border-radius:10px;white-space:pre-wrap;font-size:12.5px;line-height:1.55;margin:0;"></pre>
+            </div>
+          </div>
+
+          <!-- 右侧：开放权限白名单开关 + 事件账本 -->
+          <div class="glass-card wl-panel-card">
+            <div class="card-header">
+              <div class="header-title">
+                <span class="header-icon">🔐</span>
+                <h3>允许开放用户白名单（仅开启者可见与生效）</h3>
+              </div>
+              <span class="card-tag">热更新秒生效</span>
+            </div>
+            <p class="wl-panel-desc">默认仅对你本人（主人）开放；下方可为指定好友 QQ 单独开关权限，未开启者与普通群聊 100% 不可见、不触发。</p>
+            <div class="search-box-row wl-input-row">
+              <input type="text" id="input-libido-add-uid" class="search-input" style="flex:1;" placeholder="手动输入允许开放的好友 QQ 号...">
+              <input type="text" id="input-libido-add-label" class="search-input" style="width:120px;" placeholder="备注名(选填)">
+              <button id="btn-libido-add-user" class="btn btn-primary">➕ 开放权限</button>
+            </div>
+            <div id="libido-users-list" class="wl-bots-list" style="max-height:260px;overflow-y:auto;margin-bottom:14px;"></div>
+
+            <div class="card-header" style="margin-top:8px;">
+              <div class="header-title">
+                <span class="header-icon">🧾</span>
+                <h3>近期状态事件账本</h3>
+              </div>
+            </div>
+            <div id="libido-events-list" class="wl-bots-list" style="max-height:220px;overflow-y:auto;"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 选项卡 8.5: 星见弥桌宠与双轨屏幕分析/CUA 控制台 ================= -->
+      <section id="tab-deskpet" class="tab-panel">
+        <div class="section-toolbar">
+          <div class="tier-summary-badges">
+            <span class="tier-pill tier-pill-acq">🐾 桌宠守护端: <b id="deskpet-online-badge">检测中...</b></span>
+            <span class="tier-pill tier-pill-bff">✨ 窗口状态: <b id="deskpet-window-badge">--</b></span>
+            <span class="tier-pill tier-pill-friend" id="deskpet-game-badge">💻 日常桌面陪伴中</span>
+          </div>
+          <div class="filter-controls" style="display:flex;gap:14px;align-items:center;">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:600;color:#c084fc;">
+              <input type="checkbox" id="chk-deskpet-proactive-peek" checked> <span>👀 开启主动看屏吐槽总开关</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+              <input type="checkbox" id="chk-deskpet-allow-ingame" checked> <span>🎮 允许游戏局内实时吐槽</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="wl-layout-grid">
+          <!-- 左侧：伴随式屏幕感知 + 立即看屏测试 + 桌宠发言/动作调试 -->
+          <div class="glass-card wl-panel-card">
+            <div class="card-header">
+              <div class="header-title">
+                <span class="header-icon">👀</span>
+                <h3>双轨屏幕感知与主动吐槽控制 (反作弊安全 GDI BitBlt)</h3>
+              </div>
+              <span class="card-tag">0 钩子 · 0 注入</span>
+            </div>
+            <p class="wl-panel-desc">当前电脑前台窗口：<code id="deskpet-fg-badge" style="color:#38bdf8;">暂无数据</code></p>
+
+            <div class="search-box-row wl-input-row" style="flex-wrap:wrap;gap:10px;align-items:center;">
+              <label style="font-size:13px;">日常看屏间隔(秒)：<input type="number" id="input-deskpet-normal-sec" class="search-input" style="width:85px;" min="30" max="7200" value="900"></label>
+              <label style="font-size:13px;">游戏局内间隔(秒)：<input type="number" id="input-deskpet-game-sec" class="search-input" style="width:85px;" min="30" max="3600" value="240"></label>
+              <label style="font-size:13px;">缩放比例：<input type="number" step="0.1" id="input-deskpet-scale" class="search-input" style="width:75px;" min="0.5" max="2.2" value="1.0"></label>
+              <button id="btn-deskpet-save-intervals" class="btn btn-sm btn-outline">💾 保存参数</button>
+            </div>
+
+            <div style="margin:14px 0;">
+              <button id="btn-deskpet-peek-now" class="btn btn-primary" style="width:100%;padding:10px;">
+                📸 立即让弥酱看一眼当前屏幕并冒气泡+语音吐槽！
+              </button>
+            </div>
+
+            <div class="card-header" style="margin-top:16px;">
+              <div class="header-title">
+                <span class="header-icon">🎙️</span>
+                <h3>桌宠气泡 + 9D 语音 & 物理动作快捷测试</h3>
+              </div>
+            </div>
+            <div class="search-box-row wl-input-row" style="gap:8px;margin-top:8px;">
+              <input type="text" id="input-deskpet-say-script" class="search-input" style="flex:1;" value="【开心, 小跳】主人！<眨眼>弥酱已经来到你的电脑桌面上陪你啦喵～" placeholder="支持【动作, 表情】与 <表情> 标记...">
+              <select id="sel-deskpet-say-emotion" class="select-dropdown" style="width:130px;">
+                <option value="auto">自动 (7D心情)</option>
+                <option value="sweet">撒娇甜美</option>
+                <option value="tsundere">傲娇得意</option>
+                <option value="tsundere+shy">傲娇+害羞</option>
+                <option value="gentle">乖巧温柔</option>
+                <option value="tease">坏笑调侃</option>
+                <option value="shy">害羞慌乱</option>
+                <option value="angry">生气嗔怪</option>
+                <option value="whisper">深夜耳语</option>
+              </select>
+              <button id="btn-deskpet-say-test" class="btn btn-primary">发送台词</button>
+            </div>
+
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;">
+              <button class="btn btn-sm btn-outline btn-deskpet-quick-act" data-act="happy, jump">✨ 开心蹦跳</button>
+              <button class="btn btn-sm btn-outline btn-deskpet-quick-act" data-act="love, spin">💖 喜欢转圈</button>
+              <button class="btn btn-sm btn-outline btn-deskpet-quick-act" data-act="shy, wave">😳 害羞挥手</button>
+              <button class="btn btn-sm btn-outline btn-deskpet-quick-act" data-act="smug, dance">🎵 得意跳舞</button>
+              <button class="btn btn-sm btn-outline btn-deskpet-quick-act" data-act="angry, shiver">💢 生气发抖</button>
+              <button class="btn btn-sm btn-outline btn-deskpet-quick-act" data-act="dizzy">💫 眼冒金星</button>
+              <button class="btn btn-sm btn-outline btn-deskpet-quick-act" data-act="sit">🪑 乖巧坐下</button>
+              <button class="btn btn-sm btn-outline btn-deskpet-quick-act" data-act="sleep">💤 趴下打盹</button>
+              <button class="btn btn-sm btn-outline btn-deskpet-quick-act" data-act="stand">🧍 起身站好</button>
+            </div>
+
+            <div id="deskpet-action-feedback" style="margin-top:12px;font-size:13px;color:#a78bfa;"></div>
+          </div>
+
+          <!-- 右侧：CUA 电脑操作安全权限 + 全屏游戏穿透设置 -->
+          <div class="glass-card wl-panel-card">
+            <div class="card-header">
+              <div class="header-title">
+                <span class="header-icon">🖱️</span>
+                <h3>CUA 电脑操作与人机共处安全策略</h3>
+              </div>
+              <span class="card-tag">2秒静止让位锁</span>
+            </div>
+            <p class="wl-panel-desc">完全复刻 Coopanion 安全机制：操作键鼠前先确认你已停手 2 秒，打字途中你一碰鼠标或键盘立即停手让位。</p>
+
+            <div style="display:flex;flex-direction:column;gap:12px;margin:14px 0;">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                <input type="checkbox" id="chk-deskpet-cua-enabled" checked>
+                <span>启用屏幕视觉分析与 CUA 工具集 (<code>pet_cua_screenshot / zoom / windows</code>)</span>
+              </label>
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                <input type="checkbox" id="chk-deskpet-cua-control" checked>
+                <span>允许弥酱操作鼠标与键盘 (<code>click / move / drag / scroll / type / key / focus</code>)</span>
+              </label>
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                <input type="checkbox" id="chk-deskpet-pass-fullscreen" checked>
+                <span>🛡️ 全屏游戏防误触穿透锁（全屏打游戏时保留桌宠画面与吐槽气泡，但点击 100% 穿透给游戏）</span>
+              </label>
+            </div>
+
+            <div class="search-box-row wl-input-row" style="gap:12px;align-items:center;margin-top:14px;">
+              <label style="font-size:13.5px;">键鼠操作询问策略：</label>
+              <select id="sel-deskpet-cua-perm" class="select-dropdown" style="flex:1;">
+                <option value="ask-once">默认：看屏免问，动键鼠前问一次（同意后 30 分钟免问）</option>
+                <option value="ask-before-acting">严格：看屏免问，每轮第一次动键鼠前在桌宠气泡询问</option>
+                <option value="ask-each-turn">最严：每轮看屏幕或动键鼠前都先询问</option>
+                <option value="never-ask">完全信任：看屏幕与动键鼠均直接执行不弹窗（终端除外）</option>
+              </select>
+            </div>
+
+            <div class="search-box-row wl-input-row" style="gap:12px;align-items:center;margin-top:12px;">
+              <label style="font-size:13.5px;">桌宠自主走动频率：</label>
+              <select id="sel-deskpet-roam" class="select-dropdown" style="flex:1;">
+                <option value="calm">多待着（偶尔在屏幕底边溜达两步）</option>
+                <option value="free">常走动（活泼地左右走动、张望、蹦跳）</option>
+                <option value="off">不乱动（安静站在你放她的位置）</option>
+              </select>
+            </div>
+
+            <div class="search-box-row wl-input-row" style="gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap;">
+              <label style="font-size:13.5px;">🎙️ 说话快捷键：</label>
+              <select id="sel-deskpet-talk-hotkey" class="select-dropdown" style="width:155px;">
+                <option value="LeftAlt*2">双击 左 Alt (LeftAlt*2)</option>
+                <option value="RightAlt">单按 右 Alt (RightAlt)</option>
+                <option value="RightCtrl">单按 右 Ctrl (RightCtrl)</option>
+                <option value="F8">F8 键</option>
+                <option value="F9">F9 键</option>
+                <option value="Mouse4">鼠标侧键 4 (Mouse4)</option>
+                <option value="Mouse5">鼠标侧键 5 (Mouse5)</option>
+                <option value="Ctrl+Space">Ctrl + 空格</option>
+              </select>
+              <label style="font-size:13.5px;">触发方式：</label>
+              <select id="sel-deskpet-talk-mode" class="select-dropdown" style="flex:1;min-width:170px;">
+                <option value="auto">智能兼容（双击切换再按结束 / 长按松手即发）</option>
+                <option value="toggle">按键切换（触发开始录音，再按一下结束发送）</option>
+                <option value="hold">按住说话（按住不放说话，松手即发）</option>
+              </select>
+            </div>
+
+            <div class="search-box-row wl-input-row" style="gap:10px;align-items:center;margin-top:10px;">
+              <label style="font-size:13.5px;">⌨️ 呼出打字框快捷键：</label>
+              <select id="sel-deskpet-type-hotkey" class="select-dropdown" style="flex:1;">
+                <option value="LeftCtrl*2">双击 左 Ctrl (LeftCtrl*2)</option>
+                <option value="RightCtrl*2">双击 右 Ctrl (RightCtrl*2)</option>
+                <option value="Alt+Space">Alt + 空格</option>
+                <option value="F10">F10 键</option>
+              </select>
+            </div>
+
+            <div style="margin-top:16px;background:rgba(0,0,0,0.25);padding:12px;border-radius:10px;font-size:12.5px;line-height:1.65;">
+              <div>💡 <b>三端快捷开关说明：</b></div>
+              <div>1. <b>桌宠侧</b>：鼠标移到弥酱身上或右键点击，点「👀 眼睛图标」即可一键开关主动看屏吐槽；</div>
+              <div>2. <b>快捷键</b>：<code>双击左 Ctrl</code> 呼出打字框；<code>单击再按住左 Alt</code> 直接跟弥酱语音说话（说话即打断）；</div>
+              <div>3. <b>口令控制</b>：在 QQ 私聊或桌宠打字框发送 <code>开启主动吐槽</code> / <code>关闭主动吐槽</code> / <code>开启局内吐槽</code> / <code>关闭局内吐槽</code> / <code>桌宠状态</code> 秒级生效。</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 选项卡 9: 实时审计日志流 ================= -->
       <section id="tab-logs" class="tab-panel">
         <div class="logs-toolbar">
           <div class="log-type-buttons" id="log-type-buttons">
@@ -498,6 +776,8 @@
   <script src="/static/js/memory_view.js"></script>
   <script src="/static/js/whitelist_view.js"></script>
   <script src="/static/js/qzone_care_view.js"></script>
+  <script src="/static/js/libido_view.js"></script>
+  <script src="/static/js/deskpet_view.js"></script>
   <script src="/static/js/logs_view.js"></script>
   <script src="/static/js/app.js"></script>
 </body>

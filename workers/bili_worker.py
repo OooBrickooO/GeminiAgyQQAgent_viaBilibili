@@ -673,6 +673,20 @@ async def run_single_exploration_round() -> bool:
         sub_text = sub_res.get("full_text", "") if sub_res.get("has_subtitle") else ""
         trimmed_subs = extract_three_segment_subtitles(sub_text, max_total_chars=3300)
 
+        # V1 增强：无字幕或字幕过短时，自动拉取 B站 videoshot 雪碧图并生成 dsh-see-now 风格 3×3 故事板九宫格
+        storyboard_path = ""
+        storyboard_ts_str = ""
+        if (not sub_res.get("has_subtitle")) or len(sub_text.strip()) < 120:
+            try:
+                from social.bili_storyboard import fetch_and_build_video_storyboard
+                sb_res = await fetch_and_build_video_storyboard(bvid=bvid, cid=cid, title=title)
+                if sb_res.get("ok") and sb_res.get("image_path"):
+                    storyboard_path = sb_res["image_path"]
+                    storyboard_ts_str = ", ".join(sb_res.get("timestamps") or [])
+                    print(f"🎞️ [V1故事板] 视频({bvid})无/短字幕，已生成 {sb_res.get('frame_count')} 帧九宫格故事板: {storyboard_path}")
+            except Exception as sb_err:
+                print(f"⚠️ [V1故事板] 生成故事板略过: {sb_err}")
+
         com_lines = []
         for c in hot_comments:
             com_lines.append(f"- (rpid:{c.get('rpid', 0)}) {c.get('user')}[👍{c.get('like')}]: {c.get('message')}")
@@ -686,6 +700,8 @@ async def run_single_exploration_round() -> bool:
             "detail": detail,
             "trimmed_subs": trimmed_subs,
             "comments_str": comments_str,
+            "storyboard_path": storyboard_path,
+            "storyboard_ts_str": storyboard_ts_str,
         })
 
     # 随机抽取本轮评论口吻 & 读取真实收藏夹 + 近期评论去重样本
@@ -708,6 +724,12 @@ async def run_single_exploration_round() -> bool:
 
     bd = bundles[0]
     det = bd["detail"]
+    sb_hint = ""
+    if bd.get("storyboard_path"):
+        sb_hint = (
+            f"- 🎞️【V1 无字幕故事板九宫格预览图】：{bd['storyboard_path']}（关键帧时间戳: {bd.get('storyboard_ts_str', '')}）\n"
+            f"  💡 请先调用内置 view_file(AbsolutePath='{bd['storyboard_path']}') 查看这张 3×3 画面故事板，结合真实画面细节再给出客观评价与 JSON！\n"
+        )
     videos_section = (
         f"===【精看视频 | bvid: {bd['bvid']}】===\n"
         f"- 标题：{bd['title']}\n"
@@ -715,6 +737,7 @@ async def run_single_exploration_round() -> bool:
         f"- 播放量：{det.get('play')}\n"
         f"- 简介：{det.get('desc', '')[:200]}\n"
         f"- 视频字幕三段精华摘录（开头+中段+结尾，3300字内）：\n{bd['trimmed_subs']}\n"
+        f"{sb_hint}"
         f"- 前排观众热评与楼中楼：\n{bd['comments_str']}\n"
     )
     expected_bvids = [bd["bvid"]]
@@ -1147,7 +1170,8 @@ async def run_bili_daily_dynamic_once(today_str: str = "") -> dict:
         return {"ok": True, "skipped": True, "reason": "already_posted_today"}
 
     cred = load_bili_credential()
-    if not cred or not await verify_bili_credential(cred):
+    auth_check = await verify_bili_credential(cred) if cred else {"logged_in": False}
+    if not cred or not auth_check.get("logged_in"):
         return {"ok": False, "skipped": True, "reason": "not_logged_in"}
 
     feed_data = load_today_bili_feed()

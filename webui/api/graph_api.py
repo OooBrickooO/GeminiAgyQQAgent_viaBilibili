@@ -147,7 +147,7 @@ def get_mind_graph_data() -> dict:
         "lineStyle": { "width": 4.5, "color": "#fbbf24", "curveness": -0.06 }
     })
 
-    # 4. 二级群聊枢纽节点 (直接使用真实群号，如: 群 YOUR_GROUP_ID)
+    # 4. 二级群聊枢纽节点 (直接使用真实群号，如: 群 YOUR_GROUP_ID_1)
     group_node_ids = set()
     for idx, gid in enumerate(all_gids):
         g_node_id = f"group_{gid}"

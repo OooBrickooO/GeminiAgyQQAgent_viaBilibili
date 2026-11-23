@@ -17,8 +17,10 @@ from config import MASTER_QQ, log_mcp_tool
 from social.affection import get_user_profile
 from toys.board_renderer import (
     render_blackjack_table,
+    render_chess_board,
     render_gomoku_board,
     render_othello_board,
+    render_xiangqi_board,
 )
 from toys.games.cards_and_numbers import (
     bj_hand_value,
@@ -28,6 +30,18 @@ from toys.games.cards_and_numbers import (
     step_1a2b,
     step_blackjack,
     summary_1a2b,
+)
+from toys.games.chess_engine import (
+    chess_board_summary,
+    init_chess_state,
+    parse_chess_move,
+    step_chess,
+)
+from toys.games.xiangqi_engine import (
+    init_xiangqi_state,
+    parse_xiangqi_move,
+    step_xiangqi,
+    xiangqi_board_summary,
 )
 from toys.games.gomoku_engine import (
     choose_gomoku_bot_move,
@@ -73,6 +87,10 @@ def _summary_for_session(sess: dict, event_desc: str, show_all_bot: bool = False
         return gomoku_board_summary(sess, event_desc)
     if gt == "othello":
         return othello_board_summary(sess, event_desc)
+    if gt == "chess":
+        return chess_board_summary(sess, event_desc)
+    if gt == "xiangqi":
+        return xiangqi_board_summary(sess, event_desc)
     if gt == "blackjack":
         return bj_summary(sess, event_desc, show_all_bot=show_all_bot)
     return summary_1a2b(sess, event_desc)
@@ -134,6 +152,20 @@ def start_game(
         reply_text = f"【翻转黑白棋（{DIFF_NAMES_CN[diff]}）】摆好棋盘啦！你执黑先行，绿点位置可落子（{valid_str}），发坐标就能下~"
         board_summary = _summary_for_session(sess, "新开局，黑方（玩家）先手。")
 
+    elif gtype == "chess":
+        st = init_chess_state()
+        sess["state"] = st
+        image_path = render_chess_board(st["board"])
+        reply_text = f"【国际象棋（{DIFF_NAMES_CN[diff]}）】棋盘摆好啦！你执白先手，直接发起止坐标（如 e2e4 / e2 e4）或代数记谱（如 Nf3 / O-O）就能走子，最多可悔棋 {max_undo} 次哦~"
+        board_summary = _summary_for_session(sess, "国际象棋新开局，白方（玩家）先手。")
+
+    elif gtype == "xiangqi":
+        st = init_xiangqi_state()
+        sess["state"] = st
+        image_path = render_xiangqi_board(st["board"])
+        reply_text = f"【中国象棋（{DIFF_NAMES_CN[diff]}）】楚河汉界摆好啦！你执红先行，发中文记谱（如 炮二平五 / 马8进7）或棋盘坐标（如 H2E2）都能走子，最多可悔棋 {max_undo} 次哦~"
+        board_summary = _summary_for_session(sess, "中国象棋新开局，红方（玩家）先手。")
+
     elif gtype == "blackjack":
         deck = new_shuffled_deck()
         p_hand, b_hand = [deck.pop(), deck.pop()], [deck.pop(), deck.pop()]
@@ -193,7 +225,7 @@ def start_game(
 
 def _handle_undo(sess: dict) -> Dict[str, Any]:
     gtype = sess["game_type"]
-    if gtype not in ("gomoku", "othello"):
+    if gtype not in ("gomoku", "othello", "chess", "xiangqi"):
         return {"ok": False, "handled": True, "action_type": "UNDO", "reply_text": "扑克/猜数字游戏不能悔棋哦，继续勇敢出招吧~", "image_path": None, "should_trigger_llm_hook": False, "board_summary_for_llm": "", "game_over": False}
     hist = sess.get("history", [])
     if not hist:
@@ -210,6 +242,10 @@ def _handle_undo(sess: dict) -> Dict[str, Any]:
 
     if gtype == "gomoku":
         img = render_gomoku_board(prev_state["board"], last_user_move=prev_state.get("last_user_move"), last_bot_move=prev_state.get("last_bot_move"), threat_points=prev_state.get("threat_points"))
+    elif gtype == "chess":
+        img = render_chess_board(prev_state["board"], last_user_move=prev_state.get("last_user_move"), last_bot_move=prev_state.get("last_bot_move"), in_check_side=prev_state.get("in_check_side", ""), captured_by_user=prev_state.get("captured_by_user"), captured_by_bot=prev_state.get("captured_by_bot"))
+    elif gtype == "xiangqi":
+        img = render_xiangqi_board(prev_state["board"], last_user_move=prev_state.get("last_user_move"), last_bot_move=prev_state.get("last_bot_move"), in_check_side=prev_state.get("in_check_side", ""), captured_by_user=prev_state.get("captured_by_user"), captured_by_bot=prev_state.get("captured_by_bot"))
     else:
         valid = [(r, c) for r, c, _ in othello_valid_moves(prev_state["board"], 1)]
         flipped_tuples = [tuple(pt) for pt in (prev_state.get("flipped_cells") or []) if len(pt) == 2]
@@ -299,6 +335,18 @@ def analyze_and_execute_game_turn(
             tok = fmt_othello(rc[0], rc[1])
             return step_othello(sess, rc, strip_noise_for_chitchat(text, [tok, tok.lower()]))
         hint = "玩家没有落子，正在就棋局提问或闲聊。"
+    elif gtype == "chess":
+        st = sess["state"]
+        mv, tok = parse_chess_move(st["board"], st["castling"], st.get("ep_target"), text, side="w")
+        if mv is not None:
+            return step_chess(sess, text, strip_noise_for_chitchat(text, [tok]))
+        hint = "玩家没有报出国际象棋走法，正在就当前棋局提问或闲聊。"
+    elif gtype == "xiangqi":
+        st = sess["state"]
+        mv, tok = parse_xiangqi_move(st["board"], text, side="r")
+        if mv is not None:
+            return step_xiangqi(sess, text, strip_noise_for_chitchat(text, [tok]))
+        hint = "玩家没有报出中国象棋走法，正在就当前棋局提问或闲聊。"
     elif gtype == "blackjack":
         if re.search(r"(双倍|加倍|\bdouble\b)", text, re.IGNORECASE):
             return step_blackjack(sess, "double", strip_noise_for_chitchat(text, ["双倍", "加倍", "double"]))

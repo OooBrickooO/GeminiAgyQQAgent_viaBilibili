@@ -375,7 +375,7 @@ def sanitize_tts_text(raw_text: str) -> str:
     return text
 
 
-async def _synthesize_speech_wav(spoken_text: str, profile: dict) -> tuple[bytes | None, str]:
+async def _synthesize_speech_wav(spoken_text: str, profile: dict, text_lang: str = "auto") -> tuple[bytes | None, str]:
     """
     向 GPT-SoVITS-v5 api_v2.py 请求合成 WAV 音频字节流。
     自动探测可用端点 (Tailscale 主力机 YOUR_TTS_SERVER_IP:9880 / 本地 127.0.0.1:9880)。
@@ -385,7 +385,7 @@ async def _synthesize_speech_wav(spoken_text: str, profile: dict) -> tuple[bytes
 
     payload = {
         "text": spoken_text,
-        "text_lang": "auto",
+        "text_lang": (text_lang or "auto"),
         "ref_audio_path": profile["ref_audio_path"],
         "aux_ref_audio_paths": profile.get("aux_ref_audio_paths", []),
         "prompt_text": profile["prompt_text"],
@@ -462,6 +462,10 @@ async def send_voice_msg_impl(
         else:
             return "错误：跨通道发送语音需明确指定目标 group_id 或 user_id。"
         safe_log(f"🔓 [跨通道授权] send_voice_msg 跨通道发送 -> 群:{group_id}/私聊:{user_id}")
+    elif locked_type == "deskpet":
+        safe_log("🛡️ [防串台硬锁] 当前为桌宠会话(desktop_master)，已自动将 send_voice_msg 重定向至桌宠气泡+9D语音 pet_say！")
+        from tools.deskpet_tools import pet_say_impl
+        return await pet_say_impl(text, emotion=emotion, voice=True)
     elif locked_type == "private" and locked_id:
         is_private_target = True
         user_id = int(locked_id)

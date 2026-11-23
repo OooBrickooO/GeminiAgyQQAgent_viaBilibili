@@ -18,6 +18,8 @@ const App = {
     MemoryView.init();
     WhitelistView.init();
     QzoneCareView.init();
+    LibidoView.init();
+    if (typeof DeskPetView !== "undefined") DeskPetView.init();
     LogsView.init();
     GraphView.init();
 
@@ -57,6 +59,10 @@ const App = {
           WhitelistView.refresh();
         } else if (this.activeTab === "tab-qzone-care") {
           QzoneCareView.refresh();
+        } else if (this.activeTab === "tab-libido") {
+          setTimeout(() => LibidoView.refresh(), 60);
+        } else if (this.activeTab === "tab-deskpet") {
+          if (typeof DeskPetView !== "undefined") DeskPetView.refresh();
         } else if (this.activeTab === "tab-logs") {
           LogsView.refreshLogs();
         }
@@ -135,6 +141,8 @@ const App = {
         MemoryView.refreshMidTermMemories();
       } else if (this.activeTab === "tab-whitelist") {
         WhitelistView.refresh();
+      } else if (this.activeTab === "tab-deskpet") {
+        if (typeof DeskPetView !== "undefined") DeskPetView.refresh();
       } else if (this.activeTab === "tab-logs") {
         LogsView.refreshLogs();
       }

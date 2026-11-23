@@ -1,0 +1,26 @@
+{
+  "name": "mi-deskpet",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "星见弥 (弥酱) 桌面伴侣与屏幕分析/CUA 客户端 (基于 Coopanion 反作弊安全架构)",
+  "main": "host/electron-main.cjs",
+  "scripts": {
+    "start": "node --experimental-transform-types --no-warnings src/host-daemon.ts",
+    "pet:window": "electron host/electron-main.cjs"
+  },
+  "dependencies": {
+    "fflate": "0.8.3",
+    "jpeg-js": "^0.4.4",
+    "koffi": "3.3.1",
+    "sherpa-onnx-node": "^1.13.8",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/ws": "^8.18.2",
+    "electron": "44.4.4",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}

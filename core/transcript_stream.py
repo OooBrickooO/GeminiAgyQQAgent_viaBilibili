@@ -36,6 +36,13 @@ async def watch_process_transcript(
             pass
 
     tools_called = []
+    is_deskpet_turn = (chat_id_str == "desktop_master")
+    if is_deskpet_turn:
+        try:
+            from tools.deskpet_tools import push_deskpet_status
+            asyncio.create_task(push_deskpet_status("think", "在想"))
+        except Exception:
+            pass
 
     def _process_tool_call(tc):
         tname = tc.get("name") or tc.get("toolName", "unknown")
@@ -49,17 +56,28 @@ async def watch_process_transcript(
         if tname not in tools_called:
             tools_called.append(tname)
 
-        if task_state is not None and tname in ("send_group_msg", "send_private_msg", "send_meme", "send_local_image", "send_image_to_group", "send_image_to_private", "send_voice_msg"):
+        if task_state is not None and tname in ("send_group_msg", "send_private_msg", "send_meme", "send_local_image", "send_image_to_group", "send_image_to_private", "send_voice_msg", "pet_say", "pet_ask"):
             task_state["spoke"] = True
-            if tname == "send_voice_msg":
+            if tname in ("send_voice_msg", "pet_say"):
                 task_state["voice_triggered"] = True
 
         print(f"   ⚙️ [{chat_id_str}] 大模型正在调用工具: >> {tname}")
-        if tname in ("send_group_msg", "send_private_msg", "send_local_image", "send_image_to_group", "send_image_to_private", "send_meme", "send_voice_msg", "qzone_action", "publish_qzone_feed", "like_friend_qzone_feed", "comment_friend_qzone_feed"):
+        if is_deskpet_turn or tname.startswith("pet_"):
+            try:
+                from tools.deskpet_tools import push_deskpet_status, map_tool_to_deskpet_status
+                skind, stext, sdetail = map_tool_to_deskpet_status(tname, args if isinstance(args, dict) else {})
+                if skind:
+                    asyncio.create_task(push_deskpet_status(skind, stext, sdetail))
+            except Exception:
+                pass
+
+        if tname in ("send_group_msg", "send_private_msg", "send_local_image", "send_image_to_group", "send_image_to_private", "send_meme", "send_voice_msg", "pet_say", "pet_ask", "qzone_action", "publish_qzone_feed", "like_friend_qzone_feed", "comment_friend_qzone_feed"):
             target_gid = str(args.get("group_id", ""))
             if not target_gid and chat_id_str.startswith("group_"):
                 target_gid = chat_id_str.replace("group_", "")
-            msg_text = str(args.get("message") or args.get("text") or "(弥酱发言)")
+            elif chat_id_str == "desktop_master":
+                target_gid = "desktop_master"
+            msg_text = str(args.get("message") or args.get("text") or args.get("script") or args.get("question") or "(弥酱发言)")
             if target_gid:
                 record_bot_spoke(target_gid, msg_text)
 
@@ -128,11 +146,18 @@ async def watch_process_transcript(
             state_key = chat_id_str.replace("group_", "") if chat_id_str.startswith("group_") else chat_id_str
             spoke_disk, reply_text = check_bot_spoke_in_turn(state_key, start_time)
             if spoke_disk:
-                fallback_tool = "send_private_msg" if chat_id_str.startswith("private_") else "send_group_msg"
+                fallback_tool = "pet_say" if chat_id_str == "desktop_master" else ("send_private_msg" if chat_id_str.startswith("private_") else "send_group_msg")
                 tools_called.append(fallback_tool)
                 if task_state is not None:
                     task_state["spoke"] = True
                 print(f"   ⚙️ [{chat_id_str}] (通过持久化状态回捕发信工具: >> {fallback_tool})")
+        except Exception:
+            pass
+
+    if is_deskpet_turn:
+        try:
+            from tools.deskpet_tools import push_deskpet_status
+            asyncio.create_task(push_deskpet_status(None))
         except Exception:
             pass
 

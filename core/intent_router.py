@@ -35,7 +35,12 @@ RE_QZONE_CARE = re.compile(
 )
 
 RE_GAME = re.compile(
-    r'(五子棋|黑白棋|奥赛罗|翻转棋|21点|二十一点|blackjack|1a2b|猜数字|破译密码|下棋|来一?[局盘把场]|玩一?[局盘把]?|认输|悔棋|桌游|小游戏)',
+    r'(五子棋|黑白棋|奥赛罗|翻转棋|国际象棋|西洋棋|chess|中国象棋|象棋|xiangqi|21点|二十一点|blackjack|1a2b|猜数字|破译密码|下棋|来一?[局盘把场]|玩一?[局盘把]?|认输|悔棋|桌游|小游戏)',
+    re.IGNORECASE
+)
+
+RE_DESKPET = re.compile(
+    r'(桌宠|桌面|看屏|屏幕|截图|截屏|看一眼电脑|电脑上|窗口|鼠标|点击|双击|右键|滚轮|帮我点|帮我打字|按键|快捷键|主动吐槽|局内吐槽)',
     re.IGNORECASE
 )
 
@@ -106,11 +111,15 @@ def route_chat_effort_with_reason(
     user_affection: float = None,
     soft_cap_turns: int = 0,
     context_has_image: bool = False,
+    chat_id_str: str = "",
+    force_low_override: bool = None,
 ) -> tuple[str, str]:
     """
-    【阶段二 2.2 三档路由判定矩阵（结合 2A + 2C + 严格硬护栏）】
+    【模块一 · 局部通道级 low 强制开关 + 默认 medium/high 两档路由 (1C + 1-α + L1)】
     返回: (effort, rule_tag)
-    effort ∈ {"low", "medium", "high"}（经由 build_agy_model_flags 映射至 gemini-4-hydrogen-{low|medium|high}）
+    - 默认状态下，前台所有对话 100% 禁止落入 low，统一以 medium 为常规基准、复杂/视觉/工具/走心升至 high；
+    - 仅当主人显式为某个局部对话通道 (chat_id_str) 开启 low 开关时，该通道强制走 low（安全重试除外），
+      且完全不影响其他任何群聊或私聊通道。
     """
     raw = (message_text or "").strip()
     ephemeral = (ephemeral_context or "").strip()
@@ -118,119 +127,21 @@ def route_chat_effort_with_reason(
     pure_no_cq = re.sub(r'\[CQ:[^\]]+\]', '', pure).strip()
     domains = set(target_domains or [])
     sender_str = str(sender_id or "").strip()
-    is_master = (sender_str == str(MASTER_QQ))
-
-    has_image = (
-        "[图片#" in raw
-        or "[CQ:image" in raw
-        or "[图片#" in ephemeral
-        or bool(context_has_image)
-    )
-    has_link = bool(RE_URL_LINK.search(pure_no_cq) or (not is_breathe and RE_BILI.search(pure_no_cq)))
-    has_question = (not is_breathe) and ("?" in pure_no_cq or "？" in pure_no_cq)
-    has_deep_memory = (not is_breathe) and bool(RE_DEEP_MEMORY_CUES.search(pure_no_cq))
-    has_high_complex = (not is_breathe) and bool(RE_HIGH_COMPLEX_OR_SOUL_CUES.search(pure_no_cq))
-    has_sensitive_tool = (not is_breathe) and bool(RE_SENSITIVE_TOOL_CUES.search(pure_no_cq))
-    is_long_text = (not is_breathe) and (len(pure_no_cq) >= 45)
-    is_poke_event = ("[戳一戳]" in pure) or ("戳了戳你的猫耳" in raw) or ("戳了戳你的猫耳" in ephemeral)
-
-    # 获取好感度（若未显式传入且非主人/系统，则从本地画像快速读取）
-    aff = user_affection
-    if aff is None:
-        if is_master:
-            aff = 1000.0
-        elif sender_str and sender_str not in ("系统", "0"):
-            try:
-                from social.affection import get_user_profile
-                prof = get_user_profile(sender_str)
-                aff = float(prof.get("affection", 0.0))
-            except Exception:
-                aff = 0.0
-        else:
-            aff = 0.0
 
     # ============================================================
-    # 优先级 1 · 绝对禁用 low 的硬护栏（命中任一至少 medium 或 high）
+    # 优先级 0 · 安全拦截自愈重试走 high（确保自愈脱困）
     # ============================================================
     if is_retry:
-        return "high", "P1_guard:safety_or_silent_retry"
-
-    if was_interrupted:
-        # 发生打断思考：本轮曾触发打断旧思考并重新合并 -> 严禁 low
-        if has_image or is_long_text or has_high_complex or (domains & {"bili", "group_admin", "system_admin"}):
-            return "high", "P1_guard:interrupted_complex->high"
-        return "medium", "P1_guard:interrupted_forbidden_low->medium"
-
-    non_chat_domains = domains & {"bili", "group_admin", "system_admin", "game"}
-    if non_chat_domains or has_deep_memory:
-        # 非纯聊天工具域 / 深度 memory 检索 -> 严禁 low
-        if (domains & {"bili", "group_admin", "system_admin"}) or has_image or is_long_text or has_high_complex:
-            return "high", f"P1_guard:domain_or_deep_mem({','.join(sorted(non_chat_domains)) or 'memory'})->high"
-        return "medium", f"P1_guard:domain_or_deep_mem({','.join(sorted(non_chat_domains)) or 'memory'})->medium"
-
-    if has_image or has_link or is_long_text or has_high_complex:
-        # 高复杂度/视觉/走心信号：含图片锚点、链接、长文本(>=45字)、复杂问句/技术代码/情感安慰/虚实探讨
-        if has_image or is_long_text or has_high_complex:
-            return "high", "P1_guard:visual_or_long_or_soul_complex->high"
-        return "medium", "P1_guard:link_or_moderate_complex->medium"
+        return "high", "P0_guard:safety_or_silent_retry->high"
 
     # ============================================================
-    # 优先级 2 · 定向 low 规则（仅在未触发优先级 1 硬护栏时生效）
+    # 优先级 1 · 全局默认极速 low 路由 (gemini-4-hydrogen-low)
+    # 主人要求默认推理模型改为 hydrogen low，避免思考过长导致消息与桌宠吐槽延迟
     # ============================================================
-    # 2.1 自由冒泡 (workers/breathe.py)
-    if is_breathe:
-        is_lure_master_or_bff = is_private and (is_master or aff >= 850.0)
-        has_pending_or_bili_hook = any(
-            kw in (ephemeral + "\n" + raw)
-            for kw in ("挂念回访", "老友近况回访", "心里惦记的小事", "B站冲浪抛梗", "B站好物", "精准投喂", "pending_thought")
-        )
-        if is_lure_master_or_bff:
-            return "medium", "P2_breathe_exempt:private_master_or_bff->medium"
-        if has_pending_or_bili_hook:
-            return "medium", "P2_breathe_exempt:pending_thought_or_bili_share->medium"
-        return "low", "P2_breathe:group_casual_or_normal_outreach->low"
+    if force_low_override is False:
+        return "medium", "L1_override_medium->medium"
 
-    # 2.2 群聊话题压力出场（非 must_reply，无图片且无复杂/敏感工具域 -> 一律 low；普通问号放宽，复杂问句已由 P1 拦截）
-    if not is_private and not must_reply:
-        if not has_sensitive_tool:
-            return "low", "P2_group_pressure_burst:no_image_no_tool->low"
-        return "medium", "P2_group_pressure_burst:with_sensitive_tool->medium"
-
-    # 2.3 朋友以下（好感度 < 500，严格不包含“朋友”级别）的私聊首轮起手
-    if is_private and not is_continuation_turn and not is_master and aff < 500.0:
-        is_calling_name = bool(RE_BOT_NAME_CALL.search(pure_no_cq))
-        needs_thought = has_question or has_sensitive_tool or len(pure_no_cq) >= 24
-        if not is_calling_name and not needs_thought:
-            return "low", f"P2_private_first_turn_under_friend(aff={aff:.0f}<500)->low"
-        return "medium", f"P2_private_first_turn_under_friend_escalated(aff={aff:.0f})->medium"
-
-    # ============================================================
-    # 优先级 3 · 常规对话基准（含主人、挚友、朋友，及所有通道后续轮次）
-    # ============================================================
-    # 3.1 戳一戳反击 -> low
-    if is_poke_event:
-        return "low", "P3_regular:poke_counterattack->low"
-
-    # 3.2 群聊高轮次自然收尾 (soft_cap_turns >= 7，即第 8 轮起的软上限热聊收尾，且无问号/无敏感工具词/短句)
-    if not is_private and soft_cap_turns >= 7 and len(pure_no_cq) <= 30 and not has_question and not has_sensitive_tool:
-        return "low", f"P3_regular:group_high_turns_wind_down(turn={soft_cap_turns})->low"
-
-    # 3.3 纯文字极简互动（极短接茬 <= 22 字且无问号/无敏感工具词，或早晚安/哈哈/草等轻搭腔）
-    # 注意：对于好感度 >= 500（朋友/挚友/主人）的私聊首轮（is_continuation_turn=False），仅当命中明确轻搭腔词表 (RE_LIGHT_BANTER) 时降为 low，其余正常首轮对话保持 medium 基准以与 <500 路人/熟人严格区分。
-    if (
-        len(pure_no_cq) <= 22
-        and not has_question
-        and not has_sensitive_tool
-        and (
-            is_continuation_turn
-            or bool(RE_LIGHT_BANTER.match(pure_no_cq))
-            or (not is_private and len(pure_no_cq) <= 14)
-        )
-    ):
-        return "low", f"P3_regular:ultra_short_banter(len={len(pure_no_cq)})->low"
-
-    # 3.4 默认常规基准 -> medium
-    return "medium", "P3_regular:default_baseline->medium"
+    return "low", "P1_default:hydrogen_low_fast_response->low"
 
 
 def route_chat_effort(
@@ -247,6 +158,8 @@ def route_chat_effort(
     user_affection: float = None,
     soft_cap_turns: int = 0,
     context_has_image: bool = False,
+    chat_id_str: str = "",
+    force_low_override: bool = None,
 ) -> str:
     """兼容原有签名，直接返回 effort 字符串 ('low' | 'medium' | 'high')"""
     eff, _ = route_chat_effort_with_reason(
@@ -263,6 +176,8 @@ def route_chat_effort(
         user_affection=user_affection,
         soft_cap_turns=soft_cap_turns,
         context_has_image=context_has_image,
+        chat_id_str=chat_id_str,
+        force_low_override=force_low_override,
     )
     return eff
 
@@ -280,14 +195,16 @@ async def route_message_domains(
     返回本次推理应激活的工具领域列表，如: ["chat", "memory", "meme", "bili"]
     """
     if force_all:
-        return ["chat", "game", "memory", "meme", "bili", "group_admin", "system_admin"]
+        return ["chat", "game", "memory", "meme", "bili", "group_admin", "system_admin", "deskpet"]
 
     sender_str = str(sender_id).strip()
-    is_master = (sender_str == str(MASTER_QQ))
+    is_master = (sender_str == str(MASTER_QQ)) or (str(chat_id_str) == "desktop_master")
     clean_text = (message_text or "").strip()
 
     # 1. 基础保底领域：核心对话、记忆心事与表情包资产（零参数负担，极速响应）
     matched_domains = set(["chat", "memory", "meme"])
+    if str(chat_id_str) == "desktop_master":
+        matched_domains.add("deskpet")
 
     # 2. 呼吸场景：默认仅对话+记忆+表情；若涉及B站则动态附加
     if is_breathe:
@@ -307,6 +224,8 @@ async def route_message_domains(
     # 日常闲聊只给基础对话工具(chat, memory, meme)；命中具体指令才动态激活对应领域
     if is_master:
         master_domains = set(["chat", "memory", "meme"])
+        if str(chat_id_str) == "desktop_master" or RE_DESKPET.search(clean_text):
+            master_domains.add("deskpet")
         if RE_BILI.search(clean_text):
             master_domains.add("bili")
         if RE_GROUP_ADMIN.search(clean_text):

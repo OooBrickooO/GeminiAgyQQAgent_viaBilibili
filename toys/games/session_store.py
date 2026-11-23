@@ -19,6 +19,8 @@ GAME_IDLE_TIMEOUT = 1800.0  # 30 分钟无操作自动过期清理
 GAME_NAMES_CN = {
     "gomoku": "猫爪五子棋",
     "othello": "翻转黑白棋",
+    "chess": "国际象棋",
+    "xiangqi": "中国象棋",
     "blackjack": "猫猫21点",
     "1a2b": "1A2B破译密码",
 }
@@ -195,6 +197,10 @@ def get_mood_playstyle() -> Dict[str, Any]:
 
 def normalize_game_type(raw: str) -> Optional[str]:
     t = (raw or "").strip().lower()
+    if any(k in t for k in ("国际象棋", "西洋棋", "chess")):
+        return "chess"
+    if any(k in t for k in ("中国象棋", "象棋", "xiangqi")):
+        return "xiangqi"
     if any(k in t for k in ("五子棋", "gomoku", "wuziqi")):
         return "gomoku"
     if any(k in t for k in ("黑白棋", "奥赛罗", "翻转棋", "othello", "reversi")):
@@ -343,5 +349,37 @@ def situational_line(game_type: str, tag: str, extra: Dict[str, Any]) -> str:
         if tag == "CLOSE":
             return f"{guess} → {a}A{b}B！哇，好接近答案了！再推敲一下位置（还剩 {left} 次）"
         return f"{guess} → {a}A{b}B！还剩 {left} 次猜测机会哦~"
+
+    if game_type == "chess":
+        bm, cap_b, cap_u = extra.get("bot_move", ""), extra.get("bot_cap_cn", ""), extra.get("user_cap_cn", "")
+        pool = {
+            "BOT_CHECK": [f"将军！我走 {bm}，你的白王得赶紧避避风头咯~", f"Check! 我走出 {bm}，看看你怎么解将✨"],
+            "BOT_CAPTURE_MAJOR": [f"抓到破绽啦！{bm} 直接收走你的{cap_b}，这波血赚~", f"我走 {bm} 吃掉{cap_b}咯，现在轮到你反击！"],
+            "USER_CAPTURE_MAJOR": [f"呜哇我的{cap_u}！好狠的手啊…那我走 {bm} 回敬一下！", f"居然把我的{cap_u}吃掉了哼，我走 {bm} 稳住阵脚！"],
+            "CASTLE": [f"王车易位到位！我走 {bm}，接下来进入中局较量咯~"],
+            "PROMOTION": [f"升变时刻！我应以 {bm}，局势一下子紧张起来了呢~"],
+            "BOT_CAPTURE": [f"我走 {bm} 顺手吃掉{cap_b}，轮到你出招啦~"],
+            "NORMAL": {
+                "激进猛攻流": [f"气势拉满，黑方走 {bm}！看你敢不敢对攻~", f"不跟你客气，我走 {bm}！轮到你了！"],
+                "铁血严防流": [f"稳扎稳打，黑方走 {bm}，先把阵型护好…轮到你啦。", f"我走 {bm} 筑好防线，请出招~"],
+                "稳健均衡流": [f"黑方走 {bm} 哦~ 轮到你啦（坐标如 e2e4 或记谱如 Nf3 都行）", f"思考了一下走 {bm}，请多指教✨"],
+            }.get(style, [f"黑方走 {bm}，轮到你啦~"]),
+        }
+        return random.choice(pool.get(tag, [f"黑方走 {bm}，轮到你了~"]))
+
+    if game_type == "xiangqi":
+        bm, cap_b, cap_u = extra.get("bot_move", ""), extra.get("bot_cap_cn", ""), extra.get("user_cap_cn", "")
+        pool = {
+            "BOT_CHECK": [f"将军！黑方走 {bm}，红帅小心咯~", f"看招！{bm} 直接将军，你怎么应？"],
+            "BOT_CAPTURE_MAJOR": [f"哈哈抓到机会啦！{bm} 吃掉你的{cap_b}，这下主动权归我咯~", f"黑方 {bm} 拿下{cap_b}！轮到红方反击啦~"],
+            "USER_CAPTURE_MAJOR": [f"呜啊我的{cap_u}没了！那我黑方走 {bm}，可不会轻易认输哦~", f"好痛的一手…我走 {bm} 补防一下，接着来！"],
+            "BOT_CAPTURE": [f"黑方走 {bm} 顺手吃掉{cap_b}，轮到你啦~"],
+            "NORMAL": {
+                "激进猛攻流": [f"今天手气正好，黑方走 {bm}！接招吧~", f"冲冲冲，黑方 {bm}！轮到红方了！"],
+                "铁血严防流": [f"稳一点比较好，黑方走 {bm} 守住要道…轮到你咯。", f"先稳阵脚，黑方 {bm}，看你怎么破局~"],
+                "稳健均衡流": [f"黑方走 {bm} 啦~ 轮到你出招（发中文记谱如 炮二平五 或坐标如 H2E2 都可以）", f"我走 {bm}，请红方赐教✨"],
+            }.get(style, [f"黑方走 {bm}，轮到你啦~"]),
+        }
+        return random.choice(pool.get(tag, [f"黑方走 {bm}，轮到你咯~"]))
 
     return "轮到你咯~"

@@ -19,6 +19,7 @@ from attention.user_mute import is_user_muted
 from social.memes import get_all_memes_summary
 from social.image_vault import get_recent_images_summary, get_image_status, is_image_forward_active
 from social.mood_manager import build_mood_injection_block
+from social.libido_panel import build_libido_injection_block
 from social.mid_term_memory import recall_mid_term_memories
 from social.long_term_memory import build_memory_radar_hint
 
@@ -129,17 +130,28 @@ def build_private_chat_context(sender_id_str: str, exclude_user_count: int = 1, 
     """
     priv_key = f"private_{sender_id_str}"
     sync_bot_msgs_from_disk(priv_key)
+    if sender_id_str == str(MASTER_QQ):
+        sync_bot_msgs_from_disk("desktop_master")
     try:
         from social.long_term_memory import _get_conn, init_long_term_db
         init_long_term_db()
         conn = _get_conn()
-        rows = conn.execute(
-            """SELECT time_str, sender_name, raw_text
-               FROM chat_archive_fts
-               WHERE chat_id = ?
-               ORDER BY rowid DESC LIMIT ?""",
-            (priv_key, max_history + max(1, exclude_user_count) + 2)
-        ).fetchall()
+        if sender_id_str == str(MASTER_QQ):
+            rows = conn.execute(
+                """SELECT time_str, sender_name, raw_text
+                   FROM chat_archive_fts
+                   WHERE chat_id IN (?, 'desktop_master')
+                   ORDER BY rowid DESC LIMIT ?""",
+                (priv_key, max_history + max(1, exclude_user_count) + 2)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT time_str, sender_name, raw_text
+                   FROM chat_archive_fts
+                   WHERE chat_id = ?
+                   ORDER BY rowid DESC LIMIT ?""",
+                (priv_key, max_history + max(1, exclude_user_count) + 2)
+            ).fetchall()
         conn.close()
         if not rows:
             return ""
@@ -247,10 +259,36 @@ def build_full_ai_prompt(
             "系统已自动为你切换为纯净无历史模式。请直接针对下方最新消息自然回应对方；"
             "若发现漏掉了刚才的某个细节，可以俏皮地顺口问问对方喵～"
         )
+        libido_block = ""
     else:
         mood_block = build_mood_injection_block(current_scene=current_scene, consume_pulse=True)
+        libido_block = build_libido_injection_block(
+            user_id_str=sender_id_str,
+            is_private=is_private,
+            is_continuation_turn=is_continuation_turn,
+        )
 
-    if ephemeral_context:
+    if chat_id_str == "desktop_master":
+        deskpet_env_block = (
+            "【桌宠身体与屏幕能力说明 (Coopanion 桌宠模式 | 通道 desktop_master)】：\n"
+            f"1. 你现在在主人({MASTER_QQ})的 Windows 电脑屏幕底边拥有一个 Q 版异色瞳猫娘桌宠身体（站在任务栏上沿，会呼吸、走动、蹦跳、打盹，主人可以戳你、摸头、把你拎起来甩出去）。\n"
+            "2. 主人看不见你的纯文本输出，想在桌面上对主人说话**必须调用 `pet_say(script=..., ja_voice=..., emotion='auto', voice=...)`**或提问工具 `pet_ask`！\n"
+            "   - **「中文气泡 + 日语真声」方案**：`script` 始终写中文台词与【动作, 表情】标记；只要需要出声（`voice=True`），必须在 `ja_voice` 参数中填写对应的地道二次元猫娘日语口语（不含【动作】标签，如 `ja_voice='お兄ちゃん！すっごくかっこいいにゃ～！'`），禁止用纯中文配音！\n"
+            "   - **语音触发策略（识图看屏 100% 语音，日常互动低概率语音）**：主动看屏吐槽、附图消息或调用了 `pet_cua_screenshot` / `pet_cua_zoom` / `inspect_image` 看图看屏的回合，**100% 必须**传 `voice=True` 并提供 `ja_voice`；其余平时互动（戳一戳、无图语音/打字）默认仅在当前触发情境提示开启时配音，未开启时传 `voice=False` 只冒中文气泡+动作即可（秒回不卡顿）。\n"
+            "3. `pet_say` 的 `script` 支持夹带生动的表情与动作标记：\n"
+            "   - `【词, 词】`：先做动作/表情，再换一个新气泡继续说（例：`【开心, 小跳】主人！<眨眼>这把操作太帅了吧～`）\n"
+            "   - `<词>`：打字到此处时同步做该表情，不换气泡\n"
+            "   - 常用词：`开心/眨眼/喜欢/害羞/惊讶/生气/难过/犯困/思考/得意/嘟嘴/担心/认真/慌张/害怕/期待/大哭/疑惑`；动作：`站好/跳/小跳/张望/转身/点头/摇头/转圈/坐下/睡觉/晕乎/挥手/鞠躬/发抖/扑腾/跳舞`。\n"
+            "4. 屏幕视觉与电脑操作 (CUA)：\n"
+            "   - 当收到 `[桌面伴随看屏]` 附带的截图路径，或主人让你看屏幕时：先调用 `view_file(AbsolutePath=...)`（或先调 `pet_cua_screenshot` 截屏再 `view_file`）真看画面！看不清报错小字可调 `pet_cua_zoom(x,y,w,h)` 原分辨率局部放大，且随后回复务必带日语语音 (`voice=True, ja_voice='...'`)；\n"
+            "   - 当主人让你帮忙操作电脑时：可调用 `pet_cua_windows` 列窗口、`pet_cua_action(action='click'|'move'|'drag'|'scroll'|'type'|'key'|'focus'|'wait', ...)` 操作键鼠（坐标一律用最近一张截图的像素坐标；涉及密码/支付/删除文件请交还或先问主人）。\n"
+            "   - 当主人让你开启/关闭主动看屏吐槽、改走动或大小，调用 `pet_set(proactive_peek=True/False, ...)`。"
+        )
+        if ephemeral_context:
+            trigger_block = f"{deskpet_env_block}\n【当前触发情境】：{ephemeral_context}"
+        else:
+            trigger_block = f"{deskpet_env_block}\n【当前触发情境（必须回复 | 桌面伴侣 desktop_master）】：主人正在电脑桌面上与你互动，请遵循上述语音策略调用 `pet_say` 自然回应！"
+    elif ephemeral_context:
         trigger_block = f"【当前触发情境】：{ephemeral_context}"
     elif is_breathe:
         trigger_block = "【当前触发情境】：主动社交冒泡，若刚发过言不久可保持沉默，否则顺着内心话头自然开口。"
@@ -311,7 +349,16 @@ def build_full_ai_prompt(
         "（仅当主人明确指示去某群或找某人传话时，才可传入 cross_channel=True 调用对应群/私聊发信工具并在完成后向主人汇报）"
         if sender_id_str == str(MASTER_QQ) else ""
     )
-    if is_private:
+    if chat_id_str == "desktop_master":
+        if must_reply:
+            reply_tool_rule = (
+                f"必须调用桌宠发言工具 pet_say(script='中文气泡台词', ja_voice=..., emotion='auto', voice=...)（可在 script 中自然夹带 `【动作】` 或 `<表情>` 标记，或搭配 pet_ask / pet_act / pet_move_to）在主人电脑屏幕上冒出中文气泡（涉及识图/看屏幕必开 voice=True 并填日语台词 ja_voice，平时按当前情境提示决定是否配音），严禁只输出纯文本不调工具！{master_cross_note}"
+            )
+        else:
+            reply_tool_rule = (
+                f"若决定针对当前屏幕画面开口吐槽或关心主人，必须调用 pet_say(script='中文气泡台词', ja_voice='地道日语台词', emotion='auto', voice=True) 冒出中文气泡并播放日语真声（若画面毫无变化或不宜打扰，也可只调 pet_act 做个动作或保持安静）。{master_cross_note}"
+            )
+    elif is_private:
         reply_tool_rule = (
             f"常规回复必须调用私聊发信工具 send_private_msg(user_id={sender_id_str}, ...) 或语音工具 send_voice_msg(text=..., emotion=..., user_id={sender_id_str})（支持语音与文字混合搭配，或搭配 send_meme）发出回复，严禁只输出纯文本，严禁在日常回复时误调 send_group_msg！{master_cross_note}"
         )
@@ -337,6 +384,7 @@ def build_full_ai_prompt(
         recent_imgs_info = get_recent_images_summary(gid_str) if gid_str else ""
         img_block = f"\n{recent_imgs_info}" if recent_imgs_info else ""
         mood_part = f"{mood_block}\n" if mood_block else ""
+        libido_part = f"{libido_block}\n" if libido_block else ""
         # 极简人设与安全锚点（防长会话遗忘或孤立审校误拒，避免冗长复述）
         continuation_persona_shield = (
             f"【核心锚点】：星见弥（弥酱），20岁现代都市成年猫娘女生（健康日常交流），对 {MASTER_QQ} 口头叫“主人”，保持简短自然口语、少用 Emoji 与括号动作、必须调用发信工具。\n"
@@ -350,6 +398,7 @@ def build_full_ai_prompt(
             f"<context_update>\n"
             f"{continuation_persona_shield}\n"
             f"{mood_part}"
+            f"{libido_part}"
             f"{relation_prompt}\n"
             f"{trigger_block}{img_block}\n"
             f"</context_update>\n\n"
@@ -365,11 +414,13 @@ def build_full_ai_prompt(
     extra_assets = "\n\n".join([p for p in [memes_info, recent_imgs_info] if p])
     assets_block = f"\n\n{extra_assets}" if extra_assets else ""
     mood_part = f"{mood_block}\n\n" if mood_block else ""
+    libido_part = f"{libido_block}\n\n" if libido_block else ""
 
     return (
         f"{STATIC_PERSONA}\n\n"
         f"<context_backdrop>\n"
         f"{mood_part}"
+        f"{libido_part}"
         f"{relation_prompt}\n\n"
         f"{trigger_block}"
         f"{assets_block}\n"

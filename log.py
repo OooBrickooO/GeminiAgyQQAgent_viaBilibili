@@ -9,6 +9,7 @@ log.py — 弥酱 QQAgent 分类与流式日志监控控制台
    - python log.py bili   (只看B站冲浪探索、打分与安利手账)
    - python log.py tool   (只看MCP工具执行与发信动作)
    - python log.py error  (只看告警、超时与异常报错)
+   - python log.py deskpet (只看桌宠独立日志，不混入全局滚动流)
 """
 import os
 import sys
@@ -58,6 +59,16 @@ MODES = {
         "file": "error.log",
         "title": "⚠️ 告警与异常 (错误/超时/风控拦截)",
         "desc": "只看异常报错、安全拦截、超时斩首与故障信息"
+    },
+    "deskpet": {
+        "file": "deskpet.log",
+        "title": "🐾 桌宠专属日志 (DeskPet / desktop_master)",
+        "desc": "桌宠事件、看屏吐槽、pet_* 工具与桌宠回合推理输出（不进入全局滚动日志）"
+    },
+    "pet": {
+        "file": "deskpet.log",
+        "title": "🐾 桌宠专属日志 (别名)",
+        "desc": "同 deskpet"
     }
 }
 
@@ -68,7 +79,7 @@ def print_banner():
     print("\033[1;36m========================================================\033[0m")
     print("支持模式:")
     for k, v in MODES.items():
-        if k in ("thought", "mcp"):
+        if k in ("thought", "mcp", "pet"):
             continue
         print(f"  \033[1;32mpython log.py {k:<6}\033[0m -> {v['title']}")
     print("\033[1;36m========================================================\033[0m\n")
@@ -102,7 +113,7 @@ def follow_file(filepath: str, n_lines: int = 30):
 
 def main():
     parser = argparse.ArgumentParser(description="弥酱日志查看器", add_help=False)
-    parser.add_argument("mode", nargs="?", default="all", help="日志模式: all | think | chat | bili | tool | error")
+    parser.add_argument("mode", nargs="?", default="all", help="日志模式: all | think | chat | bili | tool | error | deskpet")
     parser.add_argument("-n", "--lines", type=int, default=30, help="初始展示行数 (默认30)")
     parser.add_argument("-h", "--help", action="store_true", help="显示帮助信息")
 

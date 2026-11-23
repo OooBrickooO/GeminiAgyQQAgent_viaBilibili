@@ -49,7 +49,8 @@ with contextlib.redirect_stdout(sys.stderr):
         like_video, reply_video, follow_up, report_video_heartbeat, get_watch_history,
         get_bili_unread_messages, get_bili_received_replies, get_bili_received_at,
         get_bili_recent_dms, send_bili_dm, get_user_favorite_folders,
-        get_favorite_folder_videos, unfavorite_video, get_bili_user_info
+        get_favorite_folder_videos, unfavorite_video, get_bili_user_info,
+        publish_bili_dynamic
     )
 
     # 确保无头环境纯净
@@ -163,6 +164,7 @@ if is_bili_domain_enabled():
         - action='reply': 发表视频评论或楼中楼回复。需传入 bvid_or_url 与 message；rpid>0 时为楼中楼回复，parent_rpid 可对准具体子评论。
         - action='follow': 关注 UP 主。需传入 mid_or_uid。
         - action='user_info': 查询自己(mid_or_uid=0)或指定UP主(mid_or_uid>0)的B站个人空间档案与最新投稿。
+        - action='publish_dynamic': 发布一条 B站 动态（3C 混合双轨：现代协议优先 + Playwright 兜底）。需传入 message，可选传 bvid_or_url 自动附带封面图与视频直链。
         """
         log_mcp_tool("bili_social", f"action={action}, target={bvid_or_url or mid_or_uid or folder}")
         act = (action or "").strip().lower()
@@ -215,8 +217,22 @@ if is_bili_domain_enabled():
             res = await get_bili_user_info(uid=int(mid_or_uid or 0))
             return json.dumps(res, ensure_ascii=False)
 
+        elif act == "publish_dynamic":
+            if not (message or "").strip():
+                return json.dumps({"ok": False, "error": "发布 B站 动态必须提供 message 正文内容"}, ensure_ascii=False)
+            bvid = ""
+            cover_url = ""
+            if (bvid_or_url or "").strip():
+                bvid = await resolve_bvid(bvid_or_url) or ""
+                if bvid:
+                    det = await get_video_details(bvid)
+                    if det.get("ok"):
+                        cover_url = str(det.get("pic") or "")
+            res = await publish_bili_dynamic(text=message.strip(), image_url=cover_url, bvid=bvid)
+            return json.dumps(res, ensure_ascii=False)
+
         else:
-            return json.dumps({"ok": False, "error": f"未知 action '{action}'，必须为 'like' | 'favorite' | 'unfavorite' | 'list_folders' | 'folder_content' | 'reply' | 'follow' | 'user_info'"}, ensure_ascii=False)
+            return json.dumps({"ok": False, "error": f"未知 action '{action}'，必须为 'like' | 'favorite' | 'unfavorite' | 'list_folders' | 'folder_content' | 'reply' | 'follow' | 'user_info' | 'publish_dynamic'"}, ensure_ascii=False)
 
 
     # --------------------------------------------------------

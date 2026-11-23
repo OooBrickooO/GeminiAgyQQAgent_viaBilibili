@@ -105,6 +105,26 @@ const ApiClient = {
     });
   },
 
+  async getLowEffort() {
+    return await this._get("/api/effort/low");
+  },
+
+  async manageLowEffort(action, chatId = "", label = "") {
+    return await this._get("/api/effort/low/manage", {
+      action,
+      chat_id: chatId,
+      label
+    });
+  },
+
+  async getLibido() {
+    return await this._get("/api/libido");
+  },
+
+  async manageLibido(params = {}) {
+    return await this._get("/api/libido/manage", params);
+  },
+
   // WebSocket 实时流管理
   connectWebSocket(onDataCallback) {
     if (onDataCallback) {

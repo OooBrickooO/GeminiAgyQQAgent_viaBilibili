@@ -3,6 +3,7 @@
  */
 const WhitelistView = {
   cachedData: null,
+  lowEffortData: null,
   searchQuery: "",
 
   init() {
@@ -60,13 +61,57 @@ const WhitelistView = {
         if (e.key === "Enter") handleAddBot();
       });
     }
+
+    const btnEnableLow = document.getElementById("btn-enable-low-effort");
+    const inputLowCid = document.getElementById("input-low-effort-chatid");
+    const inputLowLabel = document.getElementById("input-low-effort-label");
+    if (btnEnableLow && inputLowCid) {
+      const handleAddLow = async () => {
+        const cid = (inputLowCid.value || "").trim();
+        const lbl = (inputLowLabel?.value || "").trim();
+        if (!cid) return;
+        SFX.playPulse();
+        const res = await ApiClient.manageLowEffort("enable", cid, lbl);
+        if (res?.success) {
+          inputLowCid.value = "";
+          if (inputLowLabel) inputLowLabel.value = "";
+          this.lowEffortData = res;
+          this.renderLowEffort();
+        } else if (res?.error) {
+          alert(`开启局部 Low 失败: ${res.error}`);
+        }
+      };
+      btnEnableLow.addEventListener("click", handleAddLow);
+      inputLowCid.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") handleAddLow();
+      });
+    }
+
+    const btnClearAllLow = document.getElementById("btn-clear-all-low-effort");
+    if (btnClearAllLow) {
+      btnClearAllLow.addEventListener("click", async () => {
+        SFX.playPulse();
+        const res = await ApiClient.manageLowEffort("clear_all");
+        if (res?.success) {
+          this.lowEffortData = res;
+          this.renderLowEffort();
+        }
+      });
+    }
   },
 
   async refresh() {
-    const res = await ApiClient.getWhitelist();
+    const [res, lowRes] = await Promise.all([
+      ApiClient.getWhitelist(),
+      ApiClient.getLowEffort()
+    ]);
     if (res?.success) {
       this.cachedData = res;
       this.renderAll();
+    }
+    if (lowRes?.success) {
+      this.lowEffortData = lowRes;
+      this.renderLowEffort();
     }
   },
 
@@ -197,6 +242,65 @@ const WhitelistView = {
           this.renderAll();
         } else {
           alert(`移出失败: ${res?.error || '未知错误'}`);
+        }
+      });
+    });
+  },
+
+  renderLowEffort() {
+    const container = document.getElementById("low-effort-channels-grid");
+    const countEl = document.getElementById("low-effort-enabled-count");
+    if (countEl) countEl.textContent = this.lowEffortData?.enabled_count ?? 0;
+    if (!container) return;
+
+    const channels = this.lowEffortData?.channels || [];
+    if (channels.length === 0) {
+      container.innerHTML = `<div class="empty-placeholder">暂无可选对话通道，可在上方输入 private_QQ 或 group_群号 手动开启。</div>`;
+      return;
+    }
+
+    container.innerHTML = channels.map(ch => {
+      const isLow = Boolean(ch.enabled);
+      const icon = ch.type === "private" ? "💌" : "💬";
+      return `
+        <div class="wl-group-card ${isLow ? 'wl-active' : 'wl-inactive'}">
+          <div class="wl-group-main">
+            <div class="wl-group-avatar">${isLow ? '⚡' : icon}</div>
+            <div class="wl-group-info">
+              <div class="wl-group-title-row">
+                <span class="wl-group-name" title="${this._escape(ch.label)}">${this._escape(ch.label)}</span>
+                <span class="wl-status-pill ${isLow ? 'pill-on' : 'pill-off'}">
+                  ${isLow ? '局部强制 Low' : '默认 Medium/High'}
+                </span>
+              </div>
+              <div class="wl-group-meta">
+                <span class="mono-id">通道: ${this._escape(ch.chat_id)}</span>
+                ${isLow && ch.updated_at && ch.updated_at !== '-' ? `<span>·</span><span>开启于 ${this._escape(ch.updated_at)}</span>` : ''}
+              </div>
+            </div>
+          </div>
+          <div class="wl-group-actions">
+            <label class="wl-switch" title="仅切换当前对话通道的局部 Low 档">
+              <input type="checkbox" class="chk-low-effort-toggle" data-cid="${this._escape(ch.chat_id)}" data-label="${this._escape(ch.label)}" ${isLow ? 'checked' : ''}>
+              <span class="wl-slider"></span>
+            </label>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    container.querySelectorAll(".chk-low-effort-toggle").forEach(chk => {
+      chk.addEventListener("change", async (e) => {
+        const cid = e.target.getAttribute("data-cid");
+        const lbl = e.target.getAttribute("data-label") || "";
+        SFX.playChime();
+        const res = await ApiClient.manageLowEffort("toggle", cid, lbl);
+        if (res?.success) {
+          this.lowEffortData = res;
+          this.renderLowEffort();
+        } else {
+          alert(`切换局部 Low 开关失败: ${res?.error || '未知错误'}`);
+          this.refresh();
         }
       });
     });

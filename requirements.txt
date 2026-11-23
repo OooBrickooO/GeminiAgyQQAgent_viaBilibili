@@ -5,3 +5,4 @@ bilibili-api-python
 qrcode[pil]
 fastapi
 uvicorn[standard]
+# playwright  # 可选：B站 3C 无头浏览器兜底（启用需在服务器执行 pip install playwright && playwright install chromium）

@@ -1,0 +1,106 @@
+{
+  "manifest": 2,
+  "api": 2,
+  "id": "mi",
+  "version": "1.0.0",
+  "name": {
+    "zh": "星见弥 (弥酱)",
+    "en": "Hoshimi Mi (Mi-chan)"
+  },
+  "about": {
+    "zh": "星见弥（弥酱），有着粉金异色瞳、紫粉渐变双丸子长发、四角星发饰与毛茸茸猫耳猫尾的 Q 版猫娘身体",
+    "en": "Hoshimi Mi (Mi-chan), a chibi catgirl with pink-and-gold heterochromia eyes, purple-pink gradient hair with a four-point star clip, cat ears and a fluffy tail"
+  },
+  "author": "HoshimiMi",
+  "thumb": "avatar.png",
+  "entry": "figure.js",
+  "export": "createMiBody",
+  "needs": ["windows"],
+  "effects": { "reach": 0.4 },
+  "voice": { "pitch": 1.15 },
+  "bubble": {
+    "light": { "fill": "#FAF8FF", "text": "#231934", "line": "#7B5CE6" },
+    "dark": { "fill": "#1D172B", "text": "#F5F0FF", "line": "#B592FF" }
+  },
+  "axes": [
+    {
+      "id": "aura",
+      "name": { "zh": "星光配色", "en": "Starlight Aura" },
+      "options": [
+        { "id": "starlight", "name": { "zh": "星见紫粉", "en": "Starlight Purple" }, "accent": "#B592FF" },
+        { "id": "sakura", "name": { "zh": "甜心樱粉", "en": "Sakura Pink" }, "accent": "#FF7EB3" },
+        { "id": "golden", "name": { "zh": "异瞳琥珀", "en": "Amber Gold" }, "accent": "#FFB84D" }
+      ]
+    }
+  ],
+  "presets": [
+    {
+      "id": "starlight",
+      "name": { "zh": "星见紫粉", "en": "Starlight Purple" },
+      "pick": { "aura": "starlight" },
+      "accent": "#B592FF",
+      "bubble": {
+        "light": { "fill": "#FAF8FF", "text": "#231934", "line": "#7B5CE6" },
+        "dark": { "fill": "#1D172B", "text": "#F5F0FF", "line": "#B592FF" }
+      }
+    },
+    {
+      "id": "sakura",
+      "name": { "zh": "甜心樱粉", "en": "Sakura Pink" },
+      "pick": { "aura": "sakura" },
+      "accent": "#FF7EB3",
+      "bubble": {
+        "light": { "fill": "#FFF8FA", "text": "#2D1622", "line": "#E85C90" },
+        "dark": { "fill": "#281520", "text": "#FFF0F5", "line": "#FF85B3" }
+      }
+    },
+    {
+      "id": "golden",
+      "name": { "zh": "异瞳琥珀", "en": "Amber Gold" },
+      "pick": { "aura": "golden" },
+      "accent": "#FFB84D",
+      "bubble": {
+        "light": { "fill": "#FFFDF7", "text": "#2B2112", "line": "#D99226" },
+        "dark": { "fill": "#261E13", "text": "#FFF8EB", "line": "#FFC266" }
+      }
+    }
+  ],
+  "vocab": [
+    { "id": "neutral", "kind": "expression", "names": { "zh": ["平静", "日常"] }, "about": { "zh": "自然微笑注视", "en": "calm default expression" }, "seconds": 0.9 },
+    { "id": "happy", "kind": "expression", "names": { "zh": ["开心", "高兴"] }, "about": { "zh": "脸颊泛起红晕，身旁闪烁星光", "en": "happy blush with twinkling sparkles" }, "seconds": 0.9 },
+    { "id": "wink", "kind": "expression", "names": { "zh": ["眨眼", "俏皮"] }, "about": { "zh": "俏皮歪头眨眼，泛起星芒", "en": "playful wink with star glint" }, "seconds": 0.9 },
+    { "id": "love", "kind": "expression", "names": { "zh": ["喜欢", "爱心", "贴贴"] }, "about": { "zh": "脸红心跳，头顶飘出粉红小心心", "en": "blushing deeply with floating pink hearts" }, "seconds": 1.1 },
+    { "id": "shy", "kind": "expression", "names": { "zh": ["害羞", "脸红"] }, "about": { "zh": "双颊通红，害羞轻微扭捏", "en": "deep blush on cheeks, shyly swaying" }, "seconds": 1.0 },
+    { "id": "surprised", "kind": "expression", "names": { "zh": ["惊讶", "吃惊"] }, "about": { "zh": "头顶冒出感叹号", "en": "exclamation mark pops overhead" }, "seconds": 0.9 },
+    { "id": "angry", "kind": "expression", "names": { "zh": ["生气", "嗔怪"] }, "about": { "zh": "头顶冒出十字怒气青筋，气鼓鼓发抖", "en": "anger vein mark overhead, body trembling" }, "seconds": 1.0 },
+    { "id": "sad", "kind": "expression", "names": { "zh": ["难过", "伤心", "委屈"] }, "about": { "zh": "委屈掉下眼泪珠", "en": "teardrops falling" }, "seconds": 1.0 },
+    { "id": "sleepy", "kind": "expression", "names": { "zh": ["犯困", "困"] }, "about": { "zh": "脑袋一点一点犯困打哈欠", "en": "drowsy nodding and yawning" }, "seconds": 1.1 },
+    { "id": "thinking", "kind": "expression", "names": { "zh": ["思考", "琢磨"] }, "about": { "zh": "头顶飘起思考小气泡", "en": "thought bubbles rising overhead" }, "seconds": 1.0 },
+    { "id": "smug", "kind": "expression", "names": { "zh": ["得意", "傲娇", "坏笑"] }, "about": { "zh": "傲娇扬起下巴，闪耀得意星芒", "en": "smug tilt with star sparkle" }, "seconds": 1.0 },
+    { "id": "pout", "kind": "expression", "names": { "zh": ["嘟嘴", "哼"] }, "about": { "zh": "腮帮微鼓，傲娇别过头", "en": "pouting cheeks and turning slightly" }, "seconds": 1.0 },
+    { "id": "worried", "kind": "expression", "names": { "zh": ["担心", "挂念"] }, "about": { "zh": "额角冒出担忧冷汗", "en": "worried sweat drop" }, "seconds": 1.0 },
+    { "id": "determined", "kind": "expression", "names": { "zh": ["认真", "干劲"] }, "about": { "zh": "精神一振，星饰闪光", "en": "determined perk with starlight" }, "seconds": 0.9 },
+    { "id": "flustered", "kind": "expression", "names": { "zh": ["慌张", "手忙脚乱"] }, "about": { "zh": "满脸通红加冒汗晃动", "en": "blushing and sweating flustered" }, "seconds": 1.0 },
+    { "id": "scared", "kind": "expression", "names": { "zh": ["害怕", "吓一跳"] }, "about": { "zh": "冒冷汗瑟瑟发抖", "en": "shivering with sweat drop" }, "seconds": 1.0 },
+    { "id": "excited", "kind": "expression", "names": { "zh": ["期待", "兴奋", "星星眼"] }, "about": { "zh": "四周闪耀双色星芒", "en": "radiating bright sparkles" }, "seconds": 1.0 },
+    { "id": "cry", "kind": "expression", "names": { "zh": ["大哭", "泪奔"] }, "about": { "zh": "眼泪哗哗往下流", "en": "streams of tears pouring down" }, "seconds": 1.1 },
+    { "id": "confused", "kind": "expression", "names": { "zh": ["疑惑", "问号"] }, "about": { "zh": "歪头，头顶冒出问号", "en": "tilts head with a question mark overhead" }, "seconds": 0.9 },
+
+    { "id": "stand", "kind": "motion", "names": { "zh": ["站好", "起身"] }, "about": { "zh": "恢复站立姿态", "en": "stands up straight" }, "seconds": 0.4 },
+    { "id": "jump", "kind": "motion", "names": { "zh": ["跳", "蹦"] }, "about": { "zh": "开心高高跳起", "en": "jumps high into the air" }, "seconds": 0.9 },
+    { "id": "hop", "kind": "motion", "names": { "zh": ["小跳", "垫脚"] }, "about": { "zh": "轻快原地小跳一下", "en": "does a little hop" }, "seconds": 0.5 },
+    { "id": "look", "kind": "motion", "names": { "zh": ["张望", "左右看"] }, "about": { "zh": "好奇地左右张望", "en": "looks around curiously" }, "seconds": 1.6 },
+    { "id": "turn", "kind": "motion", "names": { "zh": ["转身"] }, "about": { "zh": "转向另一边", "en": "turns to face the other way" }, "seconds": 0.4 },
+    { "id": "nod", "kind": "motion", "names": { "zh": ["点头", "嗯嗯"] }, "about": { "zh": "乖巧点头", "en": "nods in agreement" }, "seconds": 0.6 },
+    { "id": "shake", "kind": "motion", "names": { "zh": ["摇头", "不要"] }, "about": { "zh": "左右摇头", "en": "shakes head" }, "seconds": 0.6 },
+    { "id": "spin", "kind": "motion", "names": { "zh": ["转圈"] }, "about": { "zh": "欢快原地转一圈", "en": "spins around" }, "seconds": 0.7 },
+    { "id": "sit", "kind": "motion", "names": { "zh": ["坐下", "蹲坐"] }, "about": { "zh": "乖巧坐下休息", "en": "sits down comfortably" }, "seconds": 0.6, "lasting": true },
+    { "id": "sleep", "kind": "motion", "names": { "zh": ["睡觉", "打盹"] }, "about": { "zh": "趴下睡觉冒出 Zzz", "en": "curls up asleep with floating Z's" }, "seconds": 1.0, "lasting": true },
+    { "id": "dizzy", "kind": "motion", "names": { "zh": ["晕乎", "眼冒金星"] }, "about": { "zh": "头顶转起金星晕乎乎", "en": "stars orbit overhead dizzily" }, "seconds": 2.4 },
+    { "id": "wave", "kind": "motion", "names": { "zh": ["挥手", "打招呼"] }, "about": { "zh": "热情晃动打招呼", "en": "waves cheerfully" }, "seconds": 0.9 },
+    { "id": "bow", "kind": "motion", "names": { "zh": ["鞠躬", "行礼"] }, "about": { "zh": "乖巧弯腰鞠躬", "en": "bows politely" }, "seconds": 0.9 },
+    { "id": "shiver", "kind": "motion", "names": { "zh": ["发抖", "哆嗦"] }, "about": { "zh": "一激灵抖动", "en": "shivers rapidly" }, "seconds": 0.7 },
+    { "id": "flap", "kind": "motion", "names": { "zh": ["扑腾", "摇耳朵"] }, "about": { "zh": "兴奋扑腾摇晃猫耳", "en": "flaps and wiggles ears excitedly" }, "seconds": 0.8 },
+    { "id": "dance", "kind": "motion", "names": { "zh": ["跳舞", "摇摆"] }, "about": { "zh": "哼着歌左右摇摆跳舞并飘出音符", "en": "sways and dances with musical notes" }, "seconds": 2.4 }
+  ]
+}

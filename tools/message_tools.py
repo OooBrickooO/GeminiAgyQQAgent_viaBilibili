@@ -299,6 +299,11 @@ async def send_group_msg_impl(
     if is_cross_channel_authorized(cross_channel):
         safe_log(f"🔓 [跨通道授权] 主人指令跨通道发送群消息 -> 目标群[{group_id}]")
     else:
+        if locked_type == "deskpet":
+            safe_log(f"🛡️ [防串台硬锁] 当前为桌宠会话(desktop_master)，已自动将误调的 send_group_msg 重定向至桌宠气泡 pet_say！")
+            _, clean_body = _extract_leading_cq_prefix(message)
+            from tools.deskpet_tools import pet_say_impl
+            return await pet_say_impl(clean_body or message)
         if locked_type == "private" and locked_id:
             safe_log(f"🛡️ [防串台硬锁] 当前为私聊会话(private_{locked_id})，已自动拦截向群[{group_id}]的误发并重定向回私聊[{locked_id}]！")
             _, clean_body = _extract_leading_cq_prefix(message)
@@ -368,6 +373,10 @@ async def send_private_msg_impl(
     if is_cross_channel_authorized(cross_channel):
         safe_log(f"🔓 [跨通道授权] 主人指令跨通道发送私聊 -> 目标QQ[{user_id}]")
     else:
+        if locked_type == "deskpet":
+            safe_log(f"🛡️ [防串台硬锁] 当前为桌宠会话(desktop_master)，已自动将 send_private_msg 重定向至桌宠气泡 pet_say！")
+            from tools.deskpet_tools import pet_say_impl
+            return await pet_say_impl(message)
         if locked_type == "private" and locked_id and str(user_id) != locked_id:
             safe_log(f"🛡️ [防串台硬锁] 当前为私聊会话(private_{locked_id})，已自动修正误传目标QQ({user_id} -> {locked_id})！")
             user_id = int(locked_id)

@@ -8,6 +8,7 @@ import os
 import uuid
 import json
 import sys
+import re
 import datetime
 
 # ============================================================
@@ -28,6 +29,8 @@ QZONE_SPECIAL_CARE_FILE = os.path.join(BASE_DIR, "qzone_special_care.json")
 QZONE_OBSERVER_STATE_FILE = os.path.join(BASE_DIR, "qzone_observer_state.json")
 CHAT_STATE_FILE = os.path.join(BASE_DIR, "chat_state.json")
 MCP_LOG_FILE = os.path.join(BASE_DIR, "mcp_activity.log")
+DESKPET_LOG_FILE = os.path.join(BASE_DIR, "logs", "deskpet.log")
+DESKPET_LINE_RE = re.compile(r'(DeskPet|desktop_master|桌宠|>> pet_|\[deskpet)')
 MUTED_USERS_FILE = os.path.join(BASE_DIR, "muted_users.json")
 
 # B站智能体相关配置路径
@@ -41,6 +44,7 @@ BILI_COMMENT_HISTORY_FILE = os.path.join(BASE_DIR, "bili_comment_history.json")
 
 # 情绪状态机与三层记忆系统配置路径
 MOOD_STATE_FILE = os.path.join(BASE_DIR, "mood_state.json")
+LIBIDO_STATE_FILE = os.path.join(BASE_DIR, "libido_state.json")
 MID_TERM_MEMORY_FILE = os.path.join(BASE_DIR, "mid_term_memory.json")
 LONG_TERM_DB_FILE = os.path.join(BASE_DIR, "long_term_memory.db")
 MEMORY_ARCHIVE_DIR = os.path.join(BASE_DIR, "memory_archive")
@@ -84,6 +88,17 @@ TTS_API_CANDIDATES = (
     f"http://127.0.0.1:{TTS_API_PORT}",
 )
 
+# 星见弥桌宠与反作弊安全屏幕感知/CUA 客户端配置 (DeskPet, 远端客户端 IP / 本机 127.0.0.1)
+DESKPET_PC_TAILSCALE_IP = os.environ.get("DESKPET_PC_TAILSCALE_IP", TTS_PC_TAILSCALE_IP)
+DESKPET_API_PORT = 7797
+DESKPET_API_CANDIDATES = (
+    f"http://127.0.0.1:{DESKPET_API_PORT}",
+    f"http://{DESKPET_PC_TAILSCALE_IP}:{DESKPET_API_PORT}",
+)
+DESKPET_CACHE_DIR = os.path.join(IMAGE_CACHE_DIR, "deskpet")
+DESKPET_STATE_FILE = os.path.join(BASE_DIR, "deskpet_state.json")
+os.makedirs(DESKPET_CACHE_DIR, exist_ok=True)
+
 # agy 可执行文件路径（优先当前用户路径，自动兼容系统路径）
 AGY_EXECUTABLE = os.environ.get("AGY_EXECUTABLE", os.path.expanduser("~/.local/bin/agy"))
 if not os.path.exists(AGY_EXECUTABLE):
@@ -91,18 +106,18 @@ if not os.path.exists(AGY_EXECUTABLE):
     AGY_EXECUTABLE = _cand if os.path.exists(_cand) else ("/usr/local/bin/agy" if os.path.exists("/usr/local/bin/agy") else "agy")
 
 AGY_MODEL_FAMILY = "gemini-4-hydrogen"
-DEFAULT_AGY_MODEL = f"{AGY_MODEL_FAMILY}-high"
+DEFAULT_AGY_MODEL = f"{AGY_MODEL_FAMILY}-low"
 
 # ============================================================
 # 3.1. 各通道分级思考深度 (Effort 分级控制，严禁使用 xhigh/Extra)
 # ============================================================
-CHAT_AGY_EFFORT = "medium"     # 前台主对话常规基准深度（支持三档动态路由 low / medium / high，经由 build_agy_model_flags 映射至 gemini-4-hydrogen-{low|medium|high}）
+CHAT_AGY_EFFORT = "low"        # 前台主对话默认极速深度 (gemini-4-hydrogen-low)，确保消息与桌宠吐槽秒级响应
 BILI_AGY_EFFORT = "medium"     # B站专属摸鱼冲浪（单视频精看结构化手账评分与热梗提炼，medium 兼顾精度与额度）
 ROUTER_AGY_EFFORT = "low"      # 话前辅助分类参考
-OBSERVER_AGY_EFFORT = "medium" # 后台事后内省观察者（好感共鸣/情绪跃迁/三层记忆抽取与核销）
+OBSERVER_AGY_EFFORT = "low"    # 后台事后内省观察者（好感共鸣/情绪跃迁/三层记忆抽取与核销）
 BACKGROUND_AGY_EFFORT = "low"  # 每日记忆总结等夜间批处理任务
 
-DEFAULT_AGY_EFFORT = CHAT_AGY_EFFORT  # 默认兜底兼容 (medium)
+DEFAULT_AGY_EFFORT = CHAT_AGY_EFFORT  # 默认兜底兼容 (low)
 ALLOWED_AGY_EFFORTS = ("low", "medium", "high")
 
 
@@ -155,13 +170,12 @@ def sanitize_process_env():
 
 
 def get_agy_env() -> dict:
-    """生成传递给 agy 子进程的独立环境变量 (让大模型能通过本地代理访问 Google API)"""
+    """生成传递给 agy 子进程的独立环境变量 (让大模型能翻墙访问 Google API)"""
     sub_env = os.environ.copy()
-    proxy_url = os.environ.get("AGY_PROXY_URL", "http://127.0.0.1:7890")
-    sub_env["HTTP_PROXY"] = proxy_url
-    sub_env["HTTPS_PROXY"] = proxy_url
-    # 让 agy 对本地 QQ API (8300)、TTS 主力机 (9880) 及专网内网直连，不走代理
-    no_proxy = f"127.0.0.1,localhost,172.17.0.2,172.17.0.1,172.18.0.1,{ONEBOT_GATEWAY_IP},{TTS_PC_TAILSCALE_IP},YOUR_EDGE_NODE_IP"
+    sub_env["HTTP_PROXY"] = "http://127.0.0.1:7890"
+    sub_env["HTTPS_PROXY"] = "http://127.0.0.1:7890"
+    # 让 agy 对本地 QQ API (8300)、TTS 主力机 (9880) 及云端内网直连，不走代理
+    no_proxy = f"127.0.0.1,localhost,172.17.0.2,172.17.0.1,172.18.0.1,{ONEBOT_GATEWAY_IP},{TTS_PC_TAILSCALE_IP},{DESKPET_PC_TAILSCALE_IP},YOUR_EDGE_NODE_IP"
     sub_env["NO_PROXY"] = no_proxy
     sub_env["no_proxy"] = no_proxy
     # Supervisor / 后台守护环境缺失补全
@@ -312,8 +326,42 @@ def is_mcp_stdio_mode() -> bool:
     return os.environ.get("QQ_MCP_STDIO_MODE", "").strip() == "1"
 
 
+def is_deskpet_log_line(text: str) -> bool:
+    """判断日志行是否属于 DeskPet 桌宠专属通道"""
+    return bool(DESKPET_LINE_RE.search(str(text or "")))
+
+
+def deskpet_log(*args, sep: str = " ") -> None:
+    """桌宠专属日志：仅落盘 logs/deskpet.log（5MB 轮转为 .old），不进入滚动控制台与 all.log"""
+    text = sep.join(str(a) for a in args).rstrip("\n")
+    if not text.strip():
+        return
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        os.makedirs(os.path.dirname(DESKPET_LOG_FILE), exist_ok=True)
+        if os.path.exists(DESKPET_LOG_FILE) and os.path.getsize(DESKPET_LOG_FILE) > 5 * 1024 * 1024:
+            bak = DESKPET_LOG_FILE + ".old"
+            try:
+                if os.path.exists(bak):
+                    os.remove(bak)
+                os.rename(DESKPET_LOG_FILE, bak)
+            except Exception:
+                pass
+        with open(DESKPET_LOG_FILE, "a", encoding="utf-8") as f:
+            for ln in text.split("\n"):
+                if ln.strip():
+                    f.write(f"[{now}] {ln.rstrip()}\n")
+    except Exception:
+        pass
+
+
 def safe_log(*args, **kwargs):
-    """stdio MCP 模式下将诊断日志自动路由至 stderr，避免污染 MCP JSON-RPC 管道。"""
+    """stdio MCP 模式下将诊断日志自动路由至 stderr，避免污染 MCP JSON-RPC 管道；DeskPet 日志单独分流至 logs/deskpet.log。"""
+    sep = kwargs.get("sep", " ")
+    text = sep.join(str(a) for a in args)
+    if "file" not in kwargs and is_deskpet_log_line(text):
+        deskpet_log(text)
+        return
     if "file" not in kwargs and is_mcp_stdio_mode():
         kwargs["file"] = sys.stderr
     print(*args, **kwargs)
@@ -324,6 +372,9 @@ def log_mcp_tool(tool_name: str, detail: str):
     now_str = datetime.datetime.now().strftime("%H:%M:%S")
     full_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_line = f"🔧 [{now_str}] [MCP工具响应] >> {tool_name}: {detail}"
+    if tool_name.startswith("pet_") or os.environ.get("QQ_LOCKED_TARGET_TYPE", "").strip() == "deskpet":
+        deskpet_log(log_line)
+        return
     try:
         sys.stderr.write(f"\n{log_line}\n")
         sys.stderr.flush()

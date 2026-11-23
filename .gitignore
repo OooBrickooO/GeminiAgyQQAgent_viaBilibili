@@ -5,23 +5,31 @@ __pycache__/
 
 # 本地临时缓存与日志
 image_cache/
+DeskPet/image_cache/
 *.log
+*.old
 mcp_activity.log
 
-# 虚拟环境
+# 虚拟环境与前端依赖 / 大模型体积文件
 .venv/
 venv/
 ENV/
+DeskPet/node_modules/
+DeskPet/models/
+DeskPet/avatar/
 
 # 临时数据与 IDE 配置
 .vscode/
 .idea/
 *.tmp
+*.bak
 *.zip
 *.db
 *.sqlite
 qzone_history.json
 seen_friend_feeds.json
+qzone_special_care.json
+qzone_observer_state.json
 chat_state.json
 user_profiles.json
 today_hot_trends.json
@@ -29,12 +37,18 @@ bili_inbox_state.json
 bili_credential.json
 today_bili_feed.json
 seen_bili_videos.json
+bili_dynamic_history.json
+bili_comment_history.json
 mood_state.json
+libido_state.json
+deskpet_state.json
 mid_term_memory.json
 board_games_state.json
+omikuji_daily.json
 omikuji_daily_state.json
+bot_whitelist.json
 bili_notes/
 memory_archive/
 thought_logs/
 logs/
-
+敏感信息.md

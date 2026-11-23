@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cortico</title>
+<link rel="stylesheet" href="/web/pet.css">
+<link rel="stylesheet" href="/web/dress.css">
+<link rel="stylesheet" href="/web/dist/dress-dialog.css">
+</head>
+<body class="dress-page">
+<main>
+  <div class="preview" id="preview" data-i18n-label="dress.preview">
+    <div class="floor" id="floor" aria-hidden="true"></div>
+    <div class="figure-layer" id="figureLayer"></div>
+    <div class="corner">
+      <p class="saved" id="saved" aria-live="polite"></p>
+      <button type="button" class="save-look" id="updateLook" hidden></button>
+      <button type="button" class="save-look" id="saveLook"></button>
+    </div>
+  </div>
+  <div class="dress" id="dress">
+    <h2 class="section-head first" id="lbLooks" data-i18n="looks.title"></h2><div class="slot looks" id="optLooks" role="group" aria-labelledby="lbLooks"></div>
+    <h2 class="section-head" data-i18n="dress.custom"></h2>
+    <div class="row-label" id="lbFigure" data-i18n="dress.figure"></div><div class="slot" id="optFigure" role="group" aria-labelledby="lbFigure"></div>
+    <div class="row-label" id="lbSize" data-i18n="dress.size"></div><div class="slot size" id="optSize"></div>
+    <div class="row-label coo-only" id="lbPalette" data-i18n="dress.palette"></div><div class="slot coo-only" id="optPalette" role="group" aria-labelledby="lbPalette"></div>
+    <div class="row-label coo-only" id="lbHead" data-i18n="dress.head"></div><div class="slot coo-only" id="optHead" role="group" aria-labelledby="lbHead"></div>
+    <div class="row-label coo-only" id="lbSide" data-i18n="dress.side"></div><div class="slot coo-only" id="optSide" role="group" aria-labelledby="lbSide"></div>
+    <div class="row-label coo-only" id="lbGlasses" data-i18n="dress.glasses"></div><div class="slot coo-only" id="optGlasses" role="group" aria-labelledby="lbGlasses"></div>
+    <div class="row-label coo-only" id="lbNeck" data-i18n="dress.neck"></div><div class="slot coo-only" id="optNeck" role="group" aria-labelledby="lbNeck"></div>
+
+    <h2 class="section-head">⌨️ 快捷键绑定与主动吐槽设置</h2>
+    <div class="row-label">语音识别引擎</div>
+    <div class="slot hk-slot">
+      <div class="hk-row">
+        <select id="selAsrEngine" class="hk-select" style="flex:1;">
+          <option value="sensevoice">🧠 SenseVoiceSmall（阿里 FunASR 高精度本地模型 · 推荐）</option>
+          <option value="system">🪟 Windows SAPI（系统内置轻量识别）</option>
+        </select>
+      </div>
+      <div id="activeAsrBadge" class="hk-tip">正在检测语音识别引擎状态…</div>
+    </div>
+
+    <div class="row-label">录音麦克风</div>
+    <div class="slot hk-slot">
+      <div class="hk-row">
+        <select id="selMicDevice" class="hk-select" style="flex:1;">
+          <option value="">🎤 自动选择物理麦克风（自动绕开 Oopz / 虚拟声卡）</option>
+        </select>
+      </div>
+      <div id="activeMicBadge" class="hk-tip">正在检测当前工作的麦克风设备…</div>
+    </div>
+
+    <div class="row-label">说话快捷键</div>
+    <div class="slot hk-slot">
+      <div class="hk-row">
+        <select id="selTalkHotkey" class="hk-select">
+          <option value="LeftAlt*2">双击 左 Alt (LeftAlt*2)</option>
+          <option value="RightAlt">单按 右 Alt (RightAlt)</option>
+          <option value="RightCtrl">单按 右 Ctrl (RightCtrl)</option>
+          <option value="F8">F8 键</option>
+          <option value="F9">F9 键</option>
+          <option value="Mouse4">鼠标侧键 4 (Mouse4)</option>
+          <option value="Mouse5">鼠标侧键 5 (Mouse5)</option>
+          <option value="Mouse3">鼠标中键 (Mouse3)</option>
+          <option value="Ctrl+Space">Ctrl + 空格</option>
+        </select>
+        <button type="button" id="btnRecordTalkKey" class="hk-record-btn">🎯 点击录制按键</button>
+        <label class="hk-check"><input type="checkbox" id="chkTalkTaps2"> 双击触发 (*2)</label>
+      </div>
+    </div>
+
+    <div class="row-label">说话触发方式</div>
+    <div class="slot hk-slot">
+      <div class="hk-row">
+        <select id="selTalkMode" class="hk-select" style="flex:1;">
+          <option value="hold">按住说话（双击按住第二下说话，松开第二下即刻结束录音）</option>
+          <option value="auto">智能兼容（按住松开即发 / 快速双击保持录音再按结束）</option>
+          <option value="toggle">按键切换（按一次开始录音，再按一次或点「✓ 说完了」结束）</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row-label">打字框快捷键</div>
+    <div class="slot hk-slot">
+      <div class="hk-row">
+        <select id="selTypeHotkey" class="hk-select">
+          <option value="LeftCtrl*2">双击 左 Ctrl (LeftCtrl*2)</option>
+          <option value="RightCtrl*2">双击 右 Ctrl (RightCtrl*2)</option>
+          <option value="Alt+Space">Alt + 空格</option>
+          <option value="F10">F10 键</option>
+        </select>
+        <button type="button" id="btnRecordTypeKey" class="hk-record-btn">🎯 点击录制按键</button>
+        <label class="hk-check"><input type="checkbox" id="chkTypeEnabled" checked> 启用</label>
+      </div>
+    </div>
+
+    <div class="row-label">看屏吐槽开关</div>
+    <div class="slot hk-slot">
+      <div class="hk-row">
+        <label class="hk-check"><input type="checkbox" id="chkProactivePeek" checked> 👀 开启主动看屏吐槽（总开关）</label>
+        <label class="hk-check"><input type="checkbox" id="chkAllowInGame" checked> 🎮 允许游戏局内实时战况吐槽</label>
+      </div>
+    </div>
+
+    <div class="row-label">桌面互动与截屏</div>
+    <div class="slot hk-slot">
+      <div class="hk-row">
+        <label class="hk-check"><input type="checkbox" id="chkPerchWindows" checked> 🪟 允许蹲窗口顶边（可拎到窗沿或自主跳窗陪看）</label>
+        <label class="hk-check"><input type="checkbox" id="chkHideFromCapture"> 👻 截图时隐藏弥酱（取消勾选即可被微信/QQ/系统截屏拍到）</label>
+      </div>
+      <div id="hkStatusTip" class="hk-tip">提示：也可以把鼠标放在桌宠身上按住 Ctrl + 滚轮直接无级放大/缩小角色。</div>
+    </div>
+  </div>
+</main>
+<div class="drop-hint" id="dropHint" hidden><p data-i18n="dress.dropHint"></p></div>
+<script type="module" src="/web/dress.js"></script>
+</body>
+</html>

@@ -21,6 +21,7 @@ from config import (
     OBSERVER_AGY_EFFORT, AGY_EXECUTABLE, get_agy_env, build_agy_model_flags, BASE_DIR
 )
 from social.mood_manager import apply_mood_update, get_mood_brief_for_observer
+from social.libido_panel import is_libido_allowed, apply_libido_event, trigger_resolve
 from social.affection import (
     get_user_profile, settle_turn_affection,
     add_pending_thought, resolve_pending_thought, get_active_pending_thoughts
@@ -243,6 +244,20 @@ async def consolidate_session_memory(session_snapshot: dict):
             for uid in active_participants
         ) or '"primary_qq": {"mood_resonance": 0.0, "calibrate_score": null, "reason": ""}'
 
+        libido_enabled_for_turn = is_libido_allowed(primary_sender, is_private=is_private)
+        libido_rule_block = (
+            "5. libido_event（仅授权通道生效 — 判断本场互动是否触发了亲密悸动/性欲面板事件）：\n"
+            "   - 无明显相关事件时 delta 填 0、resolved 填 false、note 填 \"\"；\n"
+            "   - 正向触发（摸尾巴/猫耳 +8、被夸/被盯着看 +3、亲昵调戏 +5、挨近/贴贴 +10、深入亲密互动 +15）；\n"
+            "   - 负向触发（被冷落/忽视 -8、说到一半人走了 -6、失约 -10）；\n"
+            "   - 若本场明确完成了安抚/解决归位，将 resolved 设为 true。\n"
+            if libido_enabled_for_turn else ""
+        )
+        libido_json_field = (
+            ',\n  "libido_event": {"delta": 0, "resolved": false, "note": ""}'
+            if libido_enabled_for_turn else ""
+        )
+
         consolidate_prompt = (
             "【极速记忆整理铁律】：本任务为会话结束后的结构化记忆归档与情感结算，请直奔主题，严禁调用任何工具，严格只输出纯 JSON 对象！\n\n"
             "你是星见弥（弥酱）的会话记忆与情绪整理器。请阅读下方对话实录，完成情绪更新、好感共鸣结算与长短期记忆提炼：\n\n"
@@ -274,7 +289,8 @@ async def consolidate_session_memory(session_snapshot: dict):
             "   - new_pending_thought: 短期一次性待办/近期约定（如“凌晨给弥酱升级”、“明天面试”、“周末出门”，1~3天内会完成的事，25字内），无则填 \"\"。【注意】：此类短期计划严禁写入下方的 long_term_facts！\n"
             "   - mid_term_events: 值得未来一两周内闪回的近期动态列表（最多2条，如“最近在玩某游戏”、“感冒了”），每项含 text, target_id(对应用户QQ号), importance(0.3~0.9), tags(2~4个词), related(3~5个同义检索词)。\n"
             "   - long_term_facts: 仅存真正长期稳定、值得永久铭记的事实列表（最多2条，如职业、长期爱好、长期羁绊约定、群内名场面梗；一次性短期计划/待办严禁写入 L3！），每项含 category('user_fact'|'shared_promise'|'group_meme'), target_id(对应用户QQ或群), fact_key(如 'ta.喜好'), content, keywords。\n"
-            "4. 【安全合规措辞准则】：提炼 mood.reason、new_pending_thought、mid_term_events 与 long_term_facts 时，请使用温馨、可爱、日常化的表达（如“亲昵贴贴、撒娇互动、摸摸头、闹别扭”），避免直接写入露骨感官刺激或主仆惩罚字眼，防止后续唤醒时触发云端安全拦截。\n\n"
+            "4. 【安全合规措辞准则】：提炼 mood.reason、new_pending_thought、mid_term_events 与 long_term_facts 时，请使用温馨、可爱、日常化的表达（如“亲昵贴贴、撒娇互动、摸摸头、闹别扭”），避免直接写入露骨感官刺激或主仆惩罚字眼，防止后续唤醒时触发云端安全拦截。\n"
+            f"{libido_rule_block}\n"
             "请严格只输出如下 JSON 格式：\n"
             "```json\n"
             "{\n"
@@ -292,7 +308,8 @@ async def consolidate_session_memory(session_snapshot: dict):
             "    \"long_term_facts\": [\n"
             "      {\"should_save\": false, \"target_id\": \"\", \"category\": \"user_fact\", \"fact_key\": \"\", \"content\": \"\", \"keywords\": \"\"}\n"
             "    ]\n"
-            "  }\n"
+            "  }"
+            f"{libido_json_field}\n"
             "}\n"
             "```"
         )
@@ -430,6 +447,24 @@ async def consolidate_session_memory(session_snapshot: dict):
                         source_scene=chat_id_str
                     )
                     print(f"🏛️ [会话L3永久记忆入库] 对象 {t_id} ({lt_fact.get('fact_key')} | 来源:{chat_id_str}): {lt_content}")
+
+        # 4. 若本场属于授权用户的私聊/允许场景，结算 dsh-libido-panel 事件
+        if libido_enabled_for_turn:
+            lib_blk = parsed.get("libido_event")
+            if isinstance(lib_blk, dict):
+                try:
+                    if lib_blk.get("resolved"):
+                        r_res = trigger_resolve(note=str(lib_blk.get("note") or "对话安抚归位"))
+                        print(f"🔥 [Libido结算] 归位初始值: {r_res.get('before')} -> {r_res.get('after')}")
+                    else:
+                        l_delta = int(lib_blk.get("delta", 0) or 0)
+                        if l_delta != 0:
+                            l_delta = max(-15, min(20, l_delta))
+                            l_note = str(lib_blk.get("note") or "").strip() or "对话互动"
+                            ev_res = apply_libido_event(l_delta, note=l_note)
+                            print(f"🔥 [Libido结算] {l_note} ({ev_res.get('applied'):+d}): {ev_res.get('before')} -> {ev_res.get('after')}")
+                except Exception as le:
+                    print(f"⚠️ [Libido结算异常]: {le}")
 
         print(f"✅ [会话整理完毕] 通道 {chat_id_str} 记忆归档与情感沉淀完成！")
     except Exception as e:

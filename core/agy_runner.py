@@ -22,7 +22,7 @@ import datetime
 import asyncio
 from config import (
     get_agy_env, BOT_NAMESPACE, DEFAULT_AGY_MODEL, DEFAULT_AGY_EFFORT,
-    AGY_EXECUTABLE, build_agy_model_flags, BASE_DIR
+    AGY_EXECUTABLE, build_agy_model_flags, BASE_DIR, MASTER_QQ, deskpet_log
 )
 from core.transcript_stream import watch_process_transcript
 
@@ -55,7 +55,7 @@ def get_rolling_turn_limit(chat_id_str: str = "", is_private: bool = False) -> i
     return GROUP_ROLLING_TURNS
 
 # 视为“实质性开口”的发信类工具名
-SEND_TOOL_NAMES = ("send_group_msg", "send_private_msg", "send_meme", "send_local_image", "send_image_to_group", "send_image_to_private", "send_voice_msg")
+SEND_TOOL_NAMES = ("send_group_msg", "send_private_msg", "send_meme", "send_local_image", "send_image_to_group", "send_image_to_private", "send_voice_msg", "pet_say", "pet_ask")
 
 # --- 全局并发控制 ---
 GLOBAL_AGY_SEMAPHORE = asyncio.Semaphore(6)
@@ -489,7 +489,8 @@ async def execute_agy_inference(
     custom_semaphore: asyncio.Semaphore = None,
     target_domains: list = None,
     effort: str = None,
-    caller_id: str = None
+    caller_id: str = None,
+    pre_spawn_refresh=None
 ) -> list:
     """
     对外入口：正常携带 --effort 执行；若 agy 偶发校验报错 "--effort is not supported for model"
@@ -499,14 +500,16 @@ async def execute_agy_inference(
         return await _execute_agy_inference_once(
             chat_id_str, prompt, dynamic_conv_id, messages_list=messages_list,
             custom_semaphore=custom_semaphore, target_domains=target_domains,
-            effort=effort, caller_id=caller_id, drop_effort=False
+            effort=effort, caller_id=caller_id, drop_effort=False,
+            pre_spawn_refresh=pre_spawn_refresh
         )
     except AgyEffortUnsupportedError:
         print(f"🔁 [effort 兜底重跑] 通道 {chat_id_str} agy 报 --effort 不被支持，去掉 --effort 重跑一次...")
         return await _execute_agy_inference_once(
             chat_id_str, prompt, dynamic_conv_id, messages_list=messages_list,
             custom_semaphore=custom_semaphore, target_domains=target_domains,
-            effort=effort, caller_id=caller_id, drop_effort=True
+            effort=effort, caller_id=caller_id, drop_effort=True,
+            pre_spawn_refresh=pre_spawn_refresh
         )
 
 
@@ -576,7 +579,8 @@ async def _execute_agy_inference_once(
     target_domains: list = None,
     effort: str = None,
     caller_id: str = None,
-    drop_effort: bool = False
+    drop_effort: bool = False,
+    pre_spawn_refresh=None
 ) -> list:
     """
     通过信号量调度并拉起 agy 子进程进行大模型思考。
@@ -615,6 +619,31 @@ async def _execute_agy_inference_once(
     tools_called = []
     async with target_semaphore:
         print(f"⚡ [获得{sem_name}] 通道 {chat_id_str} 开始执行大模型推理... | {format_runtime_status()}")
+        if pre_spawn_refresh is not None:
+            refreshed = await pre_spawn_refresh()
+            if refreshed:
+                prompt = refreshed.get("prompt", prompt)
+                messages_list = refreshed.get("messages_list", messages_list)
+                target_domains = refreshed.get("target_domains", target_domains)
+                effort = refreshed.get("effort", effort)
+                model_flags, resolved_model, resolved_effort = build_agy_model_flags(
+                    effort=effort,
+                    drop_effort=drop_effort,
+                    allow_low=allow_low
+                )
+                effective_effort = None if drop_effort else resolved_effort
+                domain_tag = f"domains={','.join(target_domains)}" if target_domains else "domains=all"
+                model_tag = f"model={resolved_model}, effort={effective_effort}, {domain_tag}"
+                print(f"🔄 [刷新推理负载] 通道: {chat_id_str} ({model_tag}) | {format_runtime_status()}")
+                cmd = [
+                    AGY_EXECUTABLE,
+                    f"--conversation={dynamic_conv_id}"
+                ]
+                cmd.extend(model_flags)
+                cmd.extend([
+                    "--dangerously-skip-permissions",
+                    "--prompt", prompt
+                ])
         voice_marker_path = os.path.join(tempfile.gettempdir(), f"qqagent_voice_{uuid.uuid4().hex}.flag")
         active_timeout_sec = int(DEFAULT_INFERENCE_TIMEOUT)
         try:
@@ -626,7 +655,10 @@ async def _execute_agy_inference_once(
                 sub_env["AGY_CALLER_ID"] = str(caller_id)
 
             # 1A 防串台物理通道硬锁：将当前会话所属通道类型与目标ID写入子进程环境变量
-            if chat_id_str.startswith("private_"):
+            if chat_id_str == "desktop_master":
+                sub_env["QQ_LOCKED_TARGET_TYPE"] = "deskpet"
+                sub_env["QQ_LOCKED_TARGET_ID"] = str(MASTER_QQ)
+            elif chat_id_str.startswith("private_"):
                 sub_env["QQ_LOCKED_TARGET_TYPE"] = "private"
                 sub_env["QQ_LOCKED_TARGET_ID"] = chat_id_str.replace("private_", "").strip()
             elif chat_id_str.startswith("group_"):
@@ -643,8 +675,11 @@ async def _execute_agy_inference_once(
                             break
                         text = line.decode("utf-8", errors="replace")
                         captured_output.append(text)
-                        out_pipe.write(text)
-                        out_pipe.flush()
+                        if chat_id_str == "desktop_master":
+                            deskpet_log(text)
+                        else:
+                            out_pipe.write(text)
+                            out_pipe.flush()
                 except Exception:
                     pass
 
@@ -798,6 +833,11 @@ async def _execute_agy_inference_once(
 
         except asyncio.TimeoutError:
             print(f"⚠️ [思考超时释放] 通道 {chat_id_str} {active_timeout_sec}秒超时处理完毕，释放大模型锁。")
+        except (AgyEffortUnsupportedError, PromptSafetyRejectedError):
+            raise
+        except Exception as e:
+            print(f"❌ [推理执行异常] 通道 {chat_id_str}: {type(e).__name__}: {e}", file=sys.stderr)
+            raise
         finally:
             ACTIVE_AI_TASKS.pop(chat_id_str, None)
             try:

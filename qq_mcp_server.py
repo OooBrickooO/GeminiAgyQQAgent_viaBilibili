@@ -104,6 +104,17 @@ with contextlib.redirect_stdout(sys.stderr):
     from toys.board_games import (
         play_board_game_impl
     )
+    from tools.deskpet_tools import (
+        pet_say_impl,
+        pet_ask_impl,
+        pet_act_impl,
+        pet_move_to_impl,
+        pet_set_impl,
+        pet_cua_screenshot_impl,
+        pet_cua_zoom_impl,
+        pet_cua_windows_impl,
+        pet_cua_action_impl,
+    )
 
     sanitize_process_env()
     mcp = MCPServer("qq-mcp-server")
@@ -472,11 +483,11 @@ if is_domain_enabled("game"):
         [桌游小游戏中心] 与当前聊天对象开启或操作零费用本地棋牌小游戏（支持悔棋、认输与棋局状态查看）。
         - action:
           * "start": 新开一局（会自动生成并发送开局视觉棋盘/牌桌图给对方）
-          * "move": 落子或出牌（move 填坐标如 "H8"、"D3"，或 21点指令 "要牌"/"停牌"/"双倍"，或 1A2B "1234"）
+          * "move": 落子或出牌（move 填坐标如 "H8"、"D3"、国际象棋 "e2e4"/"Nf3"、中国象棋 "炮二平五"/"H2E2"、21点 "要牌"/"停牌"/"双倍"、1A2B "1234"）
           * "undo": 悔棋（退回上一步）
           * "resign": 认输并结束当前对局
           * "status": 查看当前棋局进度
-        - game_type: "gomoku"(猫爪五子棋) | "othello"(翻转黑白棋) | "blackjack"(猫猫21点) | "1a2b"(破译密码)
+        - game_type: "gomoku"(猫爪五子棋) | "othello"(翻转黑白棋) | "chess"(国际象棋) | "xiangqi"(中国象棋) | "blackjack"(猫猫21点) | "1a2b"(破译密码)
         - difficulty: "easy"(轻松入门) | "normal"(认真较量) | "hard"(全力以赴)
         - chat_id / user_id / user_name: 可留空，默认自动锁定当前会话频道与发言者。
         """
@@ -513,6 +524,160 @@ if is_domain_enabled("game"):
             difficulty=difficulty,
             move=move,
             send_image_cb=_send_img,
+        )
+
+
+# ============================================================
+# 7. 桌宠与屏幕分析/CUA 电脑操作域 (deskpet) — Coopanion 同款桌宠躯壳与双轨屏幕引擎
+# ============================================================
+if is_domain_enabled("deskpet"):
+
+    @mcp.tool()
+    async def pet_say(
+        script: str,
+        ja_voice: str = "",
+        emotion: str = "auto",
+        voice: bool = False,
+    ) -> str:
+        """
+        [桌宠核心发言工具] 让屏幕底边的桌宠弥酱冒出中文气泡说话，并支持按「中文气泡 + 日语真声配音」播放 9D 情感语音与表情动作。
+        - script: 气泡显示的【中文台词】脚本，支持夹带表情与动作标记：
+          * `【词, 词】`：先做这些动作/表情，再换一个新气泡继续说（例：`【开心, 小跳】主人回来啦！`）
+          * `<词>`：打字到那里时同步触发该表情，不换气泡（例：`今天也辛苦啦<眨眼>要不要歇一会儿？`）
+          * 可用表情词：平静/开心/眨眼/喜欢/害羞/惊讶/生气/难过/犯困/思考/得意/嘟嘴/担心/认真/慌张/害怕/期待/大哭/疑惑
+          * 可用动作词：站好/跳/小跳/张望/转身/点头/摇头/转圈/坐下/睡觉/晕乎/挥手/鞠躬/发抖/扑腾/跳舞
+        - ja_voice: 当 `voice=True` 时必填！【纯日语配音台词】（不要带【动作】或 <表情> 标签，直接写地道二次元猫娘日语口语，如 `"お兄ちゃん、おかえり～今日もがんばったねにゃ！"`；多拍可用 `|` 分隔）。因为声库为日语模型，桌宠采用「中文气泡 (`script`) + 日语语音 (`ja_voice`)」方案！
+        - emotion: 语音声线，默认 `"auto"`（自动联动 7D 心情），也可指定 `"normal"|"gentle"|"sweet"|"tsundere"|"tease"|"angry"|"sad"|"shy"|"whisper"` 或 `"tsundere+shy"` 等双情感融合。
+        - voice: 是否合成日语真声语音（默认 False，纯中文气泡秒回）。
+          * 【识图/看屏幕时必定为 True】：只要本轮涉及主动看屏吐槽、调用了 `pet_cua_screenshot` / `pet_cua_zoom` / `inspect_image` 或主人发了图片，必须传 `voice=True` 并填写 `ja_voice`！
+          * 【平时日常互动低概率为 True】：普通戳一戳、无图打字/语音闲聊严格遵循当前情境的【本轮语音策略】提示（未触发配音时传 `voice=False` 秒回中文气泡即可）。
+        """
+        return await pet_say_impl(script=script, emotion=emotion, voice=voice, ja_voice=ja_voice)
+
+
+    @mcp.tool()
+    async def pet_ask(
+        question: str,
+        options: list[str],
+        allow_own_answer: bool = True,
+    ) -> str:
+        """
+        [桌宠选项提问气泡] 在桌宠头顶弹出一个带 1~4 个选项按钮的提问气泡（主人可按键盘数字键 1-4 或点击选择，也可自己输入回答）。
+        """
+        return await pet_ask_impl(question=question, options=options, allow_own_answer=allow_own_answer)
+
+
+    @mcp.tool()
+    async def pet_act(actions: str) -> str:
+        """
+        [桌宠纯动作/表情演出] 不说话，让桌宠依次做一串表情或动作（逗号分隔，如 "happy, jump" 或 "害羞, 转圈" 或 "sit"、"sleep"、"dance"）。
+        """
+        return await pet_act_impl(actions=actions)
+
+
+    @mcp.tool()
+    async def pet_move_to(to: str = "center", run: bool = False) -> str:
+        """
+        [桌宠走动/跑动] 让桌宠走到或跑到当前屏幕的指定横向位置：
+        - to: "left"(最左) | "center"(中间) | "right"(最右) | "cursor"(鼠标指针所在处) 或 "0.0"~"1.0" 的比例数值。
+        - run: True 为小跑过去，False 为溜达走过去。
+        """
+        return await pet_move_to_impl(to=to, run=run)
+
+
+    @mcp.tool()
+    async def pet_set(
+        proactive_peek: bool = None,
+        allow_in_game: bool = None,
+        roam: str = "",
+        scale: float = 0.0,
+    ) -> str:
+        """
+        [桌宠自我调整与主动看屏总开关] 调整桌宠弥酱的习惯与开关：
+        - proactive_peek: True 开启主动看屏吐槽 / False 关闭主动看屏吐槽（当主人说“先别看屏幕/关闭主动吐槽”时传 False）。
+        - allow_in_game: True 允许游戏局内实时看屏吐槽 / False 局内免打扰。
+        - roam: "off"(站着不动) | "calm"(偶尔走走) | "free"(经常溜达)。
+        - scale: 桌宠缩放比例（0.5 ~ 2.0，默认 1.0）。
+        """
+        return await pet_set_impl(
+            proactive_peek=proactive_peek,
+            allow_in_game=allow_in_game,
+            roam=roam,
+            scale=scale,
+        )
+
+
+    @mcp.tool()
+    async def pet_cua_screenshot(display: int = 0) -> str:
+        """
+        [屏幕分析：截取电脑屏幕] 截取主人当前电脑显示器的高清画面（自动隐藏桌宠自身并画出鼠标指针）。
+        返回截图本地绝对路径、显示器分辨率、前台窗口标题与鼠标坐标；拿到路径后请立即调用系统内置 `view_file` 查看画面内容！
+        """
+        return await pet_cua_screenshot_impl(display=display)
+
+
+    @mcp.tool()
+    async def pet_cua_zoom(x: int, y: int, width: int = 360, height: int = 260) -> str:
+        """
+        [屏幕分析：局部原分辨率高清放大] 当全屏缩略图上的代码报错、终端小字或密集图标看不清时，按最近一张截图的坐标 (x, y, width, height) 以显示器原始物理分辨率重截局部区域，返回路径供 `view_file` 查看。
+        """
+        return await pet_cua_zoom_impl(x=x, y=y, width=width, height=height)
+
+
+    @mcp.tool()
+    async def pet_cua_windows() -> str:
+        """
+        [屏幕分析：列桌面顶层窗口] 列出主人电脑当前所有可见顶层窗口的标题、所属程序、所在显示器与前台/最小化状态。
+        """
+        return await pet_cua_windows_impl()
+
+
+    @mcp.tool()
+    async def pet_cua_action(
+        action: str,
+        x: int = 0,
+        y: int = 0,
+        to_x: int = 0,
+        to_y: int = 0,
+        button: str = "left",
+        clicks: int = 1,
+        down: int = 0,
+        right: int = 0,
+        text: str = "",
+        keys: str = "",
+        hold_seconds: float = 0.0,
+        window: str = "",
+        wait_seconds: float = 0.0,
+        screenshot: bool = True,
+    ) -> str:
+        """
+        [CUA 电脑键鼠与窗口操控] 帮主人操作鼠标、键盘或切换窗口（内置 2 秒人类静止让位锁，主人一动键鼠立即让位；所有坐标均采用最近一张截图上的像素坐标）：
+        - action:
+          * "click": 点击 (x, y)，可选 button="left"|"right"|"middle", clicks=1|2|3
+          * "move": 移动鼠标悬停至 (x, y)
+          * "drag": 从 (x, y) 按住左键拖至 (to_x, to_y)
+          * "scroll": 在 (x, y) 滚轮滚动，down>0 向下滚格数，down<0 向上滚格数
+          * "type": 按 Unicode 输入文字 text（末尾带 \\n 按回车；请先 click 点中输入框）
+          * "key": 按组合键或按键序列 keys（如 "ctrl+s", "alt+f4", "ctrl+a delete"），可选 hold_seconds 按住秒数
+          * "focus": 将标题或程序名匹配 window 的窗口切到前台
+          * "wait": 等待 wait_seconds 秒（最多 30 秒）后重新截屏
+        """
+        return await pet_cua_action_impl(
+            action=action,
+            x=x,
+            y=y,
+            to_x=to_x,
+            to_y=to_y,
+            button=button,
+            clicks=clicks,
+            down=down,
+            right=right,
+            text=text,
+            keys=keys,
+            hold_seconds=hold_seconds,
+            window=window,
+            wait_seconds=wait_seconds,
+            screenshot=screenshot,
         )
 
 

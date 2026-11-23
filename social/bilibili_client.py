@@ -18,7 +18,12 @@ import httpx
 import asyncio
 from typing import Optional, List, Dict, Any
 from config import BILI_CACHE_FILE
-from social.bilibili_auth import load_bili_credential
+from social.bilibili_auth import (
+    load_bili_credential,
+    load_bili_fingerprint,
+    ensure_bili_fingerprints,
+    sign_wbi_params,
+)
 
 try:
     from bilibili_api import video, search, comment, favorite_list, user, session, dynamic, Credential
@@ -710,13 +715,16 @@ async def _fetch_favorite_folders_via_httpx(uid: int, cred: Optional["Credential
 
 async def _deal_favorite_via_httpx(aid: int, target_folder_id: int, cred: "Credential", bvid: str = "") -> Dict[str, Any]:
     """
-    原生 httpx (trust_env=False) 直连 POST https://api.bilibili.com/x/v3/fav/resource/deal
-    携带完整 Cookie 与 csrf/bili_jct 执行收藏双轨兜底。
+    【3C 第一轨 · 现代原生协议收藏】
+    自动补全 SPI (buvid3/buvid4) 与 bili_ticket 指纹，附带 WBI 签名与完整 Referer/Origin
+    直连 POST https://api.bilibili.com/x/v3/fav/resource/deal。
     """
-    headers = _build_bili_cookie_headers(cred)
+    fp = await ensure_bili_fingerprints(cred)
+    headers = _build_bili_cookie_headers(cred, extra_fp=fp)
     headers["Referer"] = f"https://www.bilibili.com/video/{bvid}" if bvid else "https://www.bilibili.com/"
     headers["Origin"] = "https://www.bilibili.com"
     headers["Content-Type"] = "application/x-www-form-urlencoded"
+    wbi_query = await sign_wbi_params({"platform": "web", "web_location": "333.788"}, cred)
     post_data = {
         "rid": str(aid),
         "type": "2",
@@ -729,10 +737,11 @@ async def _deal_favorite_via_httpx(aid: int, target_folder_id: int, cred: "Crede
         "gaia_source": "web_normal",
         "csrf": str(cred.bili_jct or ""),
     }
-    async with httpx.AsyncClient(timeout=8.0, trust_env=False) as client:
+    async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
         resp = await client.post(
             "https://api.bilibili.com/x/v3/fav/resource/deal",
             headers=headers,
+            params=wbi_query,
             data=post_data,
         )
         rj = resp.json()
@@ -859,8 +868,34 @@ async def favorite_video(
     if not target_folder_id:
         return {"ok": False, "error": "未能获取到有效的收藏夹 ID"}
 
-    # 4. 双轨执行真实收藏：优先 bilibili-api-python，失败回退原生 httpx 直连 /x/v3/fav/resource/deal
-    api_err_msg = ""
+    # 4. 3C 混合双轨执行真实收藏：
+    #    第一轨优先：现代原生 httpx (SPI指纹 + bili_ticket + WBI签名) -> 次选 bilibili-api-python；
+    #    第二轨兜底：Playwright 无头浏览器真实上下文/UI 点击收藏！
+    await ensure_bili_fingerprints(cred)
+    stage_errs = []
+    aid = await _resolve_video_aid(bvid, cred)
+
+    if aid:
+        try:
+            deal_res = await _deal_favorite_via_httpx(aid=aid, target_folder_id=int(target_folder_id), cred=cred, bvid=bvid)
+            if deal_res.get("ok"):
+                return {
+                    "ok": True,
+                    "bvid": bvid,
+                    "folder": target_folder_title,
+                    "folder_id": target_folder_id,
+                    "via": "modern_httpx_wbi",
+                    "folder_list_source": folder_source,
+                    "fallback_default": fallback_default,
+                    "fallback_reason": fallback_reason,
+                    "message": f"已通过现代协议(WBI+完整指纹)将视频【{bvid}】收藏至B站【{target_folder_title}】！"
+                }
+            stage_errs.append(f"httpx_wbi:{deal_res.get('error')}")
+        except Exception as he:
+            stage_errs.append(f"httpx_exc:{type(he).__name__}:{he}")
+    else:
+        stage_errs.append("resolve_aid_failed")
+
     if BILI_API_AVAILABLE and video is not None:
         try:
             v = video.Video(bvid=bvid, credential=cred)
@@ -889,34 +924,33 @@ async def favorite_video(
                     "fallback_reason": fallback_reason,
                     "message": f"视频【{bvid}】此前已经在收藏夹【{target_folder_title}】中啦～"
                 }
-            api_err_msg = f"{type(e).__name__}: {e}"
-            print(f"⚠️ [bili_client] bilibili-api 收藏视频【{bvid}】失败 ({api_err_msg})，启动 httpx 双轨兜底...")
+            stage_errs.append(f"bili_api:{type(e).__name__}:{e}")
 
-    # 回退原生 httpx 直连 POST https://api.bilibili.com/x/v3/fav/resource/deal
+    # 第二轨：Playwright 无头浏览器兜底
+    print(f"⚠️ [bili_client] 收藏【{bvid}】第一轨协议受阻 ({' | '.join(stage_errs)})，切换 3C Playwright 无头浏览器兜底...")
     try:
-        aid = await _resolve_video_aid(bvid, cred)
-        if not aid:
-            return {"ok": False, "error": f"收藏失败(主接口:{api_err_msg} | httpx兜底未能解析视频aid)"}
-        deal_res = await _deal_favorite_via_httpx(aid=aid, target_folder_id=int(target_folder_id), cred=cred, bvid=bvid)
-        if deal_res.get("ok"):
-            return {
-                "ok": True,
-                "bvid": bvid,
-                "folder": target_folder_title,
-                "folder_id": target_folder_id,
-                "via": "httpx_fallback",
-                "folder_list_source": folder_source,
-                "fallback_default": fallback_default,
-                "fallback_reason": fallback_reason,
-                "message": f"已通过HTTP双轨兜底将视频【{bvid}】收藏至B站【{target_folder_title}】！"
-            }
-        return {
-            "ok": False,
-            "code": deal_res.get("code"),
-            "error": f"收藏双轨均失败 (主接口: {api_err_msg} | HTTP兜底: {deal_res.get('error')})"
-        }
-    except Exception as he:
-        return {"ok": False, "error": f"收藏双轨异常 (主接口: {api_err_msg} | HTTP兜底异常: {he})"}
+        from social.bilibili_playwright import playwright_favorite_video
+        pw_res = await playwright_favorite_video(
+            bvid=bvid,
+            aid=aid,
+            target_folder_id=int(target_folder_id),
+            target_folder_title=target_folder_title,
+            credential=cred,
+        )
+        if pw_res.get("ok"):
+            pw_res["folder_list_source"] = folder_source
+            pw_res["fallback_default"] = fallback_default
+            pw_res["fallback_reason"] = fallback_reason
+            return pw_res
+        stage_errs.append(f"playwright:{pw_res.get('error')}")
+    except Exception as pe:
+        stage_errs.append(f"playwright_exc:{type(pe).__name__}:{pe}")
+
+    return {
+        "ok": False,
+        "bvid": bvid,
+        "error": f"收藏 3C 双轨均失败 ({' | '.join(stage_errs)})",
+    }
 
 
 async def get_user_favorite_folders(credential: Optional["Credential"] = None) -> Dict[str, Any]:
@@ -1329,17 +1363,25 @@ async def get_watch_history(num: int = 10, credential: Optional["Credential"] = 
     return history_items[:num]
 
 
-def _build_bili_cookie_headers(cred: "Credential") -> Dict[str, str]:
-    """构建带完整 Cookie 的 B站 Web API 请求头"""
+def _build_bili_cookie_headers(cred: "Credential", extra_fp: Optional[dict] = None) -> Dict[str, str]:
+    """构建带完整现代指纹 Cookie (SESSDATA / bili_jct / DedeUserID / buvid3 / buvid4 / bili_ticket) 的请求头"""
+    fp = extra_fp if isinstance(extra_fp, dict) else load_bili_fingerprint()
     cookie_parts = [
         f"SESSDATA={cred.sessdata}",
         f"bili_jct={cred.bili_jct}",
         f"DedeUserID={cred.dedeuserid}"
     ]
-    if getattr(cred, "buvid3", ""):
-        cookie_parts.append(f"buvid3={cred.buvid3}")
+    b3 = str(getattr(cred, "buvid3", "") or fp.get("buvid3") or "").strip()
+    b4 = str(fp.get("buvid4") or "").strip()
+    tk = str(fp.get("bili_ticket") or "").strip()
+    if b3:
+        cookie_parts.append(f"buvid3={b3}")
+    if b4:
+        cookie_parts.append(f"buvid4={b4}")
+    if tk:
+        cookie_parts.append(f"bili_ticket={tk}")
     return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "Referer": "https://message.bilibili.com/",
         "Origin": "https://message.bilibili.com",
         "Cookie": "; ".join(cookie_parts)
@@ -1833,9 +1875,10 @@ async def _download_bili_cover_bytes(image_url: str) -> tuple[bytes, str]:
 
 async def _upload_dynamic_pic_via_httpx(img_bytes: bytes, ext: str, cred: "Credential") -> Dict[str, Any]:
     """
-    原生 httpx 上传 B站 动态图床（带 Referer: https://t.bilibili.com/）。
+    原生 httpx 上传 B站 动态图床（自动补齐 SPI/ticket 指纹 + Referer: https://t.bilibili.com/）。
     """
-    headers = _build_bili_cookie_headers(cred)
+    fp = await ensure_bili_fingerprints(cred)
+    headers = _build_bili_cookie_headers(cred, extra_fp=fp)
     headers["Referer"] = "https://t.bilibili.com/"
     headers["Origin"] = "https://t.bilibili.com"
     files = {
@@ -1865,12 +1908,17 @@ async def _create_web_dynamic_via_httpx(
     pic_data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    原生 httpx Web 动态创建接口（支持图文 scene=2 与纯文字 scene=1，自动兼容 /x/dynamic/feed/create/dyn 与 vc.bilibili.com）。
+    【3C 第一轨 · 现代原生 Web 动态创建协议】
+    补全现代 B站 动态必带字段：upload_id、web_location=333.1365、x-bili-device/web-req-json、
+    SPI(buvid3/buvid4) + bili_ticket 指纹与 WBI 签名 (w_rid / wts)。
     """
-    headers = _build_bili_cookie_headers(cred)
+    fp = await ensure_bili_fingerprints(cred)
+    headers = _build_bili_cookie_headers(cred, extra_fp=fp)
     headers["Referer"] = "https://t.bilibili.com/"
     headers["Origin"] = "https://t.bilibili.com"
     csrf = str(cred.bili_jct or "")
+    uid_str = str(getattr(cred, "dedeuserid", "") or "0")
+    upload_id = f"{uid_str}_{int(time.time())}_{random.randint(1000, 9999)}"
 
     scene = 2 if pic_data else 1
     payload: Dict[str, Any] = {
@@ -1881,6 +1929,8 @@ async def _create_web_dynamic_via_httpx(
                 ]
             },
             "scene": scene,
+            "option": {},
+            "upload_id": upload_id,
             "meta": {
                 "app_meta": {"from": "create.dynamic.web", "mobi_app": "web"}
             },
@@ -1900,10 +1950,20 @@ async def _create_web_dynamic_via_httpx(
             }
         ]
 
+    base_params = {
+        "platform": "web",
+        "csrf": csrf,
+        "web_location": "333.1365",
+        "x-bili-device-req-json": json.dumps({"platform": "web", "device": "pc"}, separators=(",", ":")),
+        "x-bili-web-req-json": json.dumps({"spm_id": "333.1365"}, separators=(",", ":")),
+    }
+    wbi_params = await sign_wbi_params(base_params, cred)
+
     async with httpx.AsyncClient(timeout=12.0, trust_env=False) as client:
         resp = await client.post(
-            f"https://api.bilibili.com/x/dynamic/feed/create/dyn?csrf={csrf}&platform=web",
+            "https://api.bilibili.com/x/dynamic/feed/create/dyn",
             headers={**headers, "Content-Type": "application/json"},
+            params=wbi_params,
             json=payload,
         )
         rj = resp.json()
@@ -1911,29 +1971,6 @@ async def _create_web_dynamic_via_httpx(
             d_part = rj.get("data") or {}
             dyn_id = d_part.get("dyn_id_str") or d_part.get("dyn_id") or ""
             return {"ok": True, "dyn_id": dyn_id, "code": 0, "raw": rj}
-
-        # 若新接口受 WBI 或参数限制且为纯文本，自动尝试 vc create_dynamic 兼容端点
-        if not pic_data:
-            vc_resp = await client.post(
-                "https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/create",
-                headers={**headers, "Content-Type": "application/x-www-form-urlencoded"},
-                data={
-                    "dynamic_id": "0",
-                    "type": "4",
-                    "rid": "0",
-                    "content": text,
-                    "extension": '{"emoji_type":1}',
-                    "at_uids": "",
-                    "ctrl": "[]",
-                    "csrf_token": csrf,
-                    "csrf": csrf,
-                },
-            )
-            vc_j = vc_resp.json()
-            if vc_j.get("code") == 0:
-                d2 = vc_j.get("data") or {}
-                dyn_id2 = d2.get("dynamic_id_str") or d2.get("dynamic_id") or ""
-                return {"ok": True, "dyn_id": dyn_id2, "code": 0, "raw": vc_j}
 
         return {"ok": False, "code": rj.get("code"), "error": f"create_dyn code={rj.get('code')}: {rj.get('message', rj)}"}
 
@@ -1945,12 +1982,10 @@ async def publish_bili_dynamic(
     credential: Optional["Credential"] = None,
 ) -> Dict[str, Any]:
     """
-    【阶段三 3.4 三段式降级动态发布链路】
-    - 防盗链本地预拉封面：强制使用 `httpx` (`trust_env=False`) 携带 `Referer: https://www.bilibili.com/` 下载二进制到内存；
-    - 三段降级发布链路：
-      1. 首选：`bilibili-api-python` 图文动态发送（传入内存图片字节/对象）；
-      2. 降级 1：原生 `httpx` 上传 B站 动态图床（带 `Referer: https://t.bilibili.com/`）+ 原生 Web 动态创建接口发送图文；
-      3. 降级 2：若图床或图文接口受风控/参数阻拦，自动降级为纯文字动态（确保附带完整可点击 `https://www.bilibili.com/video/{bvid}` 链接）。
+    【模块三 3C 混合双轨动态发布引擎】
+    1. 第一轨（现代原生协议优先）：补全 SPI 指纹 / bili_ticket / WBI 签名 / upload_id，优先原生 httpx 图文 -> 次选 bilibili-api 图文；
+    2. 第二轨（Playwright 无头浏览器兜底）：当协议接口遇风控或参数拦截时，自动启动无头浏览器真实打开 t.bilibili.com 填文案传图发布；
+    3. 终极兜底：若图床/浏览器均受阻，自动尝试纯文字直链动态确保不流产。
     """
     cred = credential or load_bili_credential()
     if not cred or not getattr(cred, "dedeuserid", ""):
@@ -1960,7 +1995,10 @@ async def publish_bili_dynamic(
     if not clean_text:
         return {"ok": False, "error": "动态文本不能为空", "code": -400}
 
+    await ensure_bili_fingerprints(cred)
     video_link = f"https://www.bilibili.com/video/{bvid}" if bvid else ""
+    if video_link and video_link not in clean_text:
+        clean_text = f"{clean_text}\n{video_link}"
 
     # Step 0: 防盗链本地预拉封面到内存
     img_bytes = b""
@@ -1978,7 +2016,45 @@ async def publish_bili_dynamic(
         stage_errors.append(f"cover_prefetch:{cover_err}")
 
     # ------------------------------------------------------------
-    # 首选 (Stage 1)：bilibili-api-python 图文动态发送（传入内存图片字节/对象）
+    # 阶段 1 (3C 第一轨优先)：现代原生 httpx (upload_bfs + WBI + upload_id 图文/纯文)
+    # ------------------------------------------------------------
+    if img_bytes:
+        try:
+            up_res = await _upload_dynamic_pic_via_httpx(img_bytes, img_ext, cred)
+            if up_res.get("ok") and up_res.get("pic_data"):
+                create_res = await _create_web_dynamic_via_httpx(clean_text, cred, pic_data=up_res["pic_data"])
+                if create_res.get("ok"):
+                    return {
+                        "ok": True,
+                        "stage": "stage1_modern_httpx_image",
+                        "dyn_id": create_res.get("dyn_id"),
+                        "has_image": True,
+                        "bvid": bvid,
+                        "raw": create_res.get("raw"),
+                    }
+                stage_errors.append(f"stage1_create:{create_res.get('error')}")
+            else:
+                stage_errors.append(f"stage1_upload:{up_res.get('error')}")
+        except Exception as e1:
+            stage_errors.append(f"stage1_exc:{type(e1).__name__}:{e1}")
+    else:
+        try:
+            create_plain = await _create_web_dynamic_via_httpx(clean_text, cred, pic_data=None)
+            if create_plain.get("ok"):
+                return {
+                    "ok": True,
+                    "stage": "stage1_modern_httpx_text",
+                    "dyn_id": create_plain.get("dyn_id"),
+                    "has_image": False,
+                    "bvid": bvid,
+                    "raw": create_plain.get("raw"),
+                }
+            stage_errors.append(f"stage1_plain:{create_plain.get('error')}")
+        except Exception as e1p:
+            stage_errors.append(f"stage1_plain_exc:{type(e1p).__name__}:{e1p}")
+
+    # ------------------------------------------------------------
+    # 阶段 2 (第一轨备用)：bilibili-api-python 发送
     # ------------------------------------------------------------
     if img_bytes and BILI_API_AVAILABLE and dynamic is not None and Picture is not None:
         try:
@@ -2001,88 +2077,79 @@ async def publish_bili_dynamic(
             dyn_id = resp.get("dyn_id") if isinstance(resp, dict) else str(resp)
             return {
                 "ok": True,
-                "stage": "stage1_bili_api_image",
+                "stage": "stage2_bili_api_image",
                 "dyn_id": dyn_id,
                 "has_image": True,
                 "bvid": bvid,
                 "raw": resp if isinstance(resp, dict) else {"result": str(resp)},
             }
-        except Exception as e1:
-            err1 = f"{type(e1).__name__}: {e1}"
-            stage_errors.append(f"stage1:{err1}")
-            print(f"⚠️ [publish_bili_dynamic] 首选 bilibili-api 图文发布失败，转入降级 1 (原生 httpx 图床): {err1}")
+        except Exception as e2:
+            stage_errors.append(f"stage2_bili_api:{type(e2).__name__}:{e2}")
 
     # ------------------------------------------------------------
-    # 降级 1 (Stage 2)：原生 httpx 上传 B站动态图床 + 原生 Web 动态创建接口发送图文
+    # 阶段 3 (3C 第二轨核心兜底)：Playwright 无头浏览器真实打开 t.bilibili.com 发布！
+    # ------------------------------------------------------------
+    print(f"⚠️ [publish_bili_dynamic] 第一轨协议发布受阻 ({' | '.join(stage_errors)})，切换 3C Playwright 无头浏览器兜底...")
+    try:
+        from social.bilibili_playwright import playwright_publish_dynamic
+        pw_res = await playwright_publish_dynamic(
+            text=clean_text,
+            img_bytes=img_bytes,
+            img_ext=img_ext,
+            bvid=bvid,
+            credential=cred,
+        )
+        if pw_res.get("ok"):
+            pw_res["stage_errors"] = stage_errors
+            return pw_res
+        stage_errors.append(f"stage3_playwright:{pw_res.get('error')}")
+    except Exception as pe:
+        stage_errors.append(f"stage3_playwright_exc:{type(pe).__name__}:{pe}")
+
+    # ------------------------------------------------------------
+    # 阶段 4 (终极纯文字直链兜底)：仅当原本带图失败时再试一次纯文字协议
     # ------------------------------------------------------------
     if img_bytes:
         try:
-            up_res = await _upload_dynamic_pic_via_httpx(img_bytes, img_ext, cred)
-            if up_res.get("ok") and up_res.get("pic_data"):
-                create_res = await _create_web_dynamic_via_httpx(clean_text, cred, pic_data=up_res["pic_data"])
-                if create_res.get("ok"):
-                    return {
-                        "ok": True,
-                        "stage": "stage2_httpx_image",
-                        "dyn_id": create_res.get("dyn_id"),
-                        "has_image": True,
-                        "bvid": bvid,
-                        "raw": create_res.get("raw"),
-                    }
-                stage_errors.append(f"stage2_create:{create_res.get('error')}")
-            else:
-                stage_errors.append(f"stage2_upload:{up_res.get('error')}")
-        except Exception as e2:
-            stage_errors.append(f"stage2_exc:{type(e2).__name__}:{e2}")
-            print(f"⚠️ [publish_bili_dynamic] 降级 1 (httpx 图文) 失败，转入降级 2 (纯文字兜底): {e2}")
-
-    # ------------------------------------------------------------
-    # 降级 2 (Stage 3)：自动降级为纯文字动态（确保附带完整可点击 https://www.bilibili.com/video/{bvid} 链接）
-    # ------------------------------------------------------------
-    fallback_text = clean_text
-    if video_link and video_link not in fallback_text:
-        fallback_text = f"{fallback_text}\n{video_link}"
+            httpx_plain = await _create_web_dynamic_via_httpx(clean_text, cred, pic_data=None)
+            if httpx_plain.get("ok"):
+                return {
+                    "ok": True,
+                    "stage": "stage4_text_only_httpx",
+                    "dyn_id": httpx_plain.get("dyn_id"),
+                    "has_image": False,
+                    "fallback_text_only": True,
+                    "bvid": bvid,
+                    "stage_errors": stage_errors,
+                    "raw": httpx_plain.get("raw"),
+                }
+            stage_errors.append(f"stage4_httpx:{httpx_plain.get('error')}")
+        except Exception as e4:
+            stage_errors.append(f"stage4_httpx_exc:{type(e4).__name__}:{e4}")
 
     if BILI_API_AVAILABLE and dynamic is not None:
         try:
-            dyn_plain = dynamic.BuildDynamic.empty().add_plain_text(fallback_text)
-            resp3 = await dynamic.send_dynamic(info=dyn_plain, credential=cred)
-            dyn_id3 = resp3.get("dyn_id") if isinstance(resp3, dict) else str(resp3)
+            dyn_plain = dynamic.BuildDynamic.empty().add_plain_text(clean_text)
+            resp_plain = await dynamic.send_dynamic(info=dyn_plain, credential=cred)
+            dyn_id_p = resp_plain.get("dyn_id") if isinstance(resp_plain, dict) else str(resp_plain)
             return {
                 "ok": True,
-                "stage": "stage3_text_only_bili_api",
-                "dyn_id": dyn_id3,
+                "stage": "stage4_text_only_bili_api",
+                "dyn_id": dyn_id_p,
                 "has_image": False,
                 "fallback_text_only": True,
                 "bvid": bvid,
                 "stage_errors": stage_errors,
-                "raw": resp3 if isinstance(resp3, dict) else {"result": str(resp3)},
+                "raw": resp_plain if isinstance(resp_plain, dict) else {"result": str(resp_plain)},
             }
-        except Exception as e3:
-            stage_errors.append(f"stage3_bili_api:{type(e3).__name__}:{e3}")
-
-    try:
-        httpx_plain = await _create_web_dynamic_via_httpx(fallback_text, cred, pic_data=None)
-        if httpx_plain.get("ok"):
-            return {
-                "ok": True,
-                "stage": "stage3_text_only_httpx",
-                "dyn_id": httpx_plain.get("dyn_id"),
-                "has_image": False,
-                "fallback_text_only": True,
-                "bvid": bvid,
-                "stage_errors": stage_errors,
-                "raw": httpx_plain.get("raw"),
-            }
-        stage_errors.append(f"stage3_httpx:{httpx_plain.get('error')}")
-    except Exception as e4:
-        stage_errors.append(f"stage3_httpx_exc:{type(e4).__name__}:{e4}")
+        except Exception as e5:
+            stage_errors.append(f"stage4_bili_api:{type(e5).__name__}:{e5}")
 
     return {
         "ok": False,
         "bvid": bvid,
         "stage_errors": stage_errors,
-        "error": " | ".join(stage_errors) if stage_errors else "三段式动态发布均失败",
+        "error": " | ".join(stage_errors) if stage_errors else "3C 双轨动态发布均失败",
     }
 
 

@@ -13,8 +13,53 @@
 >    - **【绝对红线】严禁打包任何 `.json` 数据、状态与配置文件**（如 `allowed_groups.json`, `user_profiles.json`, `qzone_history.json`, `chat_state.json`, `bili_credential.json` 等），防止远端服务器解压时意外覆写白名单和运行状态数据；
 >    - **【绝对红线】严禁打包 Markdown 文档**（如 `project_status.md`, `plan.md` 等），避免向生产服务器冗余上传文档。
 
-> **最后更新时间**: 2026年11月 (星见弥 V5.2.1：审查缺陷修复闭环 — 锁 2 温和压制重构防微弱波动腰斩、`reason_updated_at` 独立 1h 起因过期、消除 L1 历史旧图污染 `context_has_image`、B 站即兴分享 `set` 下标修复与动态时间对齐、急件池强杀收口及全私聊兜底)
+> **最后更新时间**: 2026年11月 (星见弥 V5.4.4：桌宠保留高清单图 PNG 物理立绘，新增 2B 蹲窗口顶边与自主爬窗互动 + 截图可见性热开关)
 > **当前状态**: 
+> - **V5.4.4 桌宠 2B 蹲窗口顶边爬窗互动与截图可见性开关 (`DeskPet/web/mi/figure.js`, `DeskPet/web/kit/body.js`, `DeskPet/web/pet-app.js`, `DeskPet/web/dress.html`, `DeskPet/web/dress.js`, `DeskPet/src/host-daemon.ts`, `DeskPet/host/electron-main.cjs`)**：
+>   - **回归高清单图 PNG 立绘 (`DeskPet/web/mi/avatar.png` + `figure.js`)**：经实测多部件自动切层绑骨调参成本高、观感不如原版单图稳定，已撤回 WebGL 拆层骨架方案，恢复 `GeminiAvatar_no_bg.png` 单图立绘 + 物理弹簧形变 + 二次元矢量漫符渲染；
+>   - **2B 蹲窗口顶边与自主爬窗 (`DeskPet/web/kit/body.js`)**：接通 `host/windows.cjs` 无钩子 Win32 窗口上边缘 `ledges`，支持手动拎放到非最大化窗口顶边落脚、窗口移动平滑跟随、窗口关闭/最小化/遮挡时露出惊讶表情掉落回任务栏、漫游模式自主助跑抛物线跳上活跃窗口顶边坐姿陪看，以及全屏游戏自动回退底边保护；
+>   - **装扮设置页新增互动与截屏开关 (`DeskPet/web/dress.html`, `dress.js`, `host/electron-main.cjs`)**：新增「🪟 允许蹲窗口顶边 (`perchWindows`)」与「👻 截图时隐藏弥酱 (`hideFromCapture`，默认关闭即允许截屏可见，底层同步调用 Electron `setContentProtection` 与 Win32 `SetWindowDisplayAffinity` 确保透明窗口热切换即时生效)」实时开关。
+> - **V5.4.3 桌宠日志独立分流 (`config.py`, `core/log_manager.py`, `core/agy_runner.py`, `core/bubble_dispatcher.py`, `log.py`)**：
+>   - **主滚动流完全静默**：在 `CategorizedStreamTee`（按行缓冲判定 `DESKPET_LINE_RE`）、`config.safe_log`、`config.log_mcp_tool` 与 `agy_runner._stream_pipe(chat_id_str == "desktop_master")` 源头拦截 DeskPet/桌宠/pet_* 日志，不再写入控制台标准输出、`all.log`、`chat.log`、`thought.log`、`tool.log` 或 `mcp_activity.log`（仅含异常关键字的桌宠报错仍同步双写 `error.log` 保留故障感知）；
+>   - **独立文件与查看模式 (`logs/deskpet.log`)**：所有桌宠事件、看屏吐槽、`pet_*` 工具与 `desktop_master` 推理输出统一落盘至 `logs/deskpet.log`（自带 5MB `.old` 自动轮转），可在笔记本通过 `python log.py deskpet`（别名 `pet`）独立实时查看；
+> - **V5.4.2 桌宠「中文气泡 + 日语语音 (`ja_voice`)」与分级语音触发策略 (`tools/voice_tools.py`, `tools/deskpet_tools.py`, `tools/image_tools.py`, `qq_mcp_server.py`, `attention/context_builder.py`, `attention/debounce_queue.py`)**：
+>   - **「中文气泡 (`script`) + 日语真声 (`ja_voice`)」音画分离**：针对 GPT-SoVITS 日语声库特性，扩展 `_synthesize_speech_wav(..., text_lang="ja")` 与 `pet_say(script, ja_voice="", emotion="auto", voice=False)`；桌宠气泡始终展示中文台词与 `【动作, 表情】`/`<表情>` 演出，开启语音时自动按 `text_lang="ja"` 合成地道二次元猫娘日语配音；内置纯中文安全拦截（未传 `ja_voice` 且 `script` 不含假名时自动降级纯中文气泡），绝不输出违和中文合成音；
+>   - **识图/识屏 100% 必配日语语音 + 日常互动低概率配音**：在 `handle_deskpet_event`、`pet_cua_screenshot_impl`、`pet_cua_zoom_impl`、`inspect_image_impl` 与 `context_builder.py` 全链路接入策略控制——主动看屏吐槽 (`screen_peek`)、打字附图或回合中主动调用看屏/识图工具时 **100%** 触发日语真声；普通触摸 (`touch` ~18%)、无图打字/语音/提问 (`speech`/`typed`/`answer` ~25%) 与安全兜底/开关回执默认走纯中文气泡秒回，显著降低日常等待耗时。
+> - **V5.4.1 私聊连发防拆轮收口与全通道 3.0s 统一防抖 (`attention/debounce_queue.py`, `core/agy_runner.py`)**：
+>   - **恢复私聊老策略，根治“条条都回”**：将 `PENDING_URGENT_TURNS` 急件补答严格收敛回群聊直接 `@`/叫名字/引用 (`is_urgent_call` / `not is_private and must_reply`) 与桌宠显式主动呼叫 (`desktop_master` 语音/打字/回答)；QQ 私聊移除无条件入急件池分支，恢复“未开口可打断合并重跑、已开口 (`spoke=True`) 或收尾期统一走思考期降维沉淀”；
+>   - **补齐 `INFLIGHT_TURNS` 开机前热合并盲区 (`PRE_SPAWN_PRIVATE_BUFFERS` + `pre_spawn_refresh`)**：修复此前私聊在组装 Prompt、意图路由或排队等待 `GLOBAL_AGY_SEMAPHORE` 期间（`ACTIVE_AI_TASKS` 尚未建档）新消息无法打断合并而被拆轮或吞掉的盲区，子进程启动前一刻统一热合并进当前轮次并重算工具域与档位；
+>   - **全通道统一 `3.0s` 防抖节律**：`GROUP_DEBOUNCE_WAIT` (`4.8s -> 3.0s`) 与 `DIRECT_DEBOUNCE_WAIT` (`2.2s -> 3.0s`) 及默认防抖 `DEBOUNCE_WAIT_TIME` 统一调整为 **`3.0s`**（保留私聊/直`@` `8.0s` 滑动上限与普通群聊 `12.0s` 滑动上限隔离，以及桌宠实时交互 `0.2~0.6s` 极速响应）。
+> - **V5.4 星见弥桌宠 (`/DeskPet/`) 与双轨屏幕分析 / CUA 电脑操作引擎 (`DeskPet/`, `tools/deskpet_tools.py`, `qq_mcp_server.py`, `core/bubble_dispatcher.py`, `attention/debounce_queue.py`, `attention/context_builder.py`, `core/transcript_stream.py`, `core/intent_router.py`, `webui/api/deskpet_api.py`, `webui/static/js/deskpet_view.js`, `webui/server.py`, `webui/templates/index.html`)**：
+>   - **100% 继承 Coopanion 反作弊安全架构 (`/DeskPet/`)**：全面复用 Coopanion 的 `host/*.cjs`（Electron 透明穿透置顶窗口、任务栏 `3 DIP` 悬垂、`FORWARD_MOVES=false` 无钩子 15ms 坐标轮询、`setContentProtection(true)` 截屏隐身、`AttachThreadInput` 焦点借还）、`web/kit/body.js`（物理走跳、呼吸形变、拎起甩出摔晕、摸头爱心粒子、台词与状态气泡）、`src/cua/engine/win32.ts`（`koffi` FFI 直调 GDI `BitBlt` 桌面合成截屏与 `SendInput`，0 全局 `WH_*_LL` 钩子、0 进程内存读取、0 图形管线劫持）与 `src/asr/hotkey.ts`（30ms `GetAsyncKeyState` 无钩子轮询 `LeftAlt*2` 说话键与 `LeftCtrl*2` 打字键）；
+>   - **`GeminiAvatar_no_bg.png` 专属星见弥形象包 (`DeskPet/web/mi/`)**：将异色瞳 Q 版弥酱透明底立绘接入 `kit.createBody` 物理舞台，叠加二次元矢量漫符（脸红晕染、异色瞳星芒、十字怒气青筋、水滴冷汗、感叹号、问号、摔晕旋转金星、倾听声波、思考气泡、流泪瀑布）及 GPT-SoVITS-v5 真声播放时的 WebAudio 立体声声道跟随 (`StereoPannerNode`) 与实时响度说话弹动 (`AnalyserNode`)；
+>   - **双轨屏幕分析 + 游戏局内实时吐槽 + 三端总开关 (`proactivePeek`)**：
+>     - **轨道 1（0-Token 伴随式屏幕感知 + 主动看屏吐槽）**：每 3.5s 采样前台窗口标题、进程名与闲置时间；支持**游戏局内实时战况吐槽**（配合 `passWhenFullscreen=true` 全屏游戏自动鼠标穿透防误触）、场景切换吐槽与深夜/专注陪伴；在**桌宠悬停/右键菜单（「👀 主动看屏吐槽」按钮）、8088 WebUI「🐾 桌宠与屏幕」选项卡、QQ/桌宠 0-LLM 指令（`开启主动吐槽 / 关闭主动吐槽 / 开启局内吐槽 / 关闭局内吐槽 / 桌宠状态`）**三端同步挂载总开关；
+>     - **轨道 2（按需深度视觉分析 + CUA 电脑操作）**：新增 `deskpet` MCP 领域（`pet_say`、`pet_ask`、`pet_act`、`pet_move_to`、`pet_set`、`pet_cua_screenshot`、`pet_cua_zoom` 原分辨率局部放大、`pet_cua_windows`、`pet_cua_action` 键鼠与窗口操控），内置 `GetLastInputInfo` + `>2px` 2 秒人类静止让位锁、桌宠气泡四档权限审批与 `AGY_CALLER_ID == MASTER_QQ` 防注入硬锁；
+>   - **唯一大脑跨端融合 (`desktop_master`)**：`core/bubble_dispatcher.py` (`0.0.0.0:18302/deskpet_event`) 接收桌宠事件，`core/transcript_stream.py` 将 `agy` 工具调用实时流式映射为桌宠头顶动态状态泡（`在想 / 在看屏幕 / 在操作鼠标 / 在打字 / 在翻记忆 / 在刷B站`），`context_builder.py` 打通 `private_YOUR_MASTER_QQ` 与 `desktop_master` 双向近期记忆滑窗。
+> - **V5.3.1 `dsh-libido-panel` 原生 Python 0和谐版移植与 WebUI 权限开关 (`social/libido_panel.py`, `webui/api/libido_api.py`, `webui/static/js/libido_view.js`, `attention/context_builder.py`, `workers/post_turn_observer.py`, `webui/server.py`, `webui/templates/index.html`)**：
+>   - **100% 复刻原版动力学**：0–100 数值状态机与五档（`平静 / 有点想 / 难耐 / 快撑不住 / 发情`）、SHA256 确定性清醒漂移（每 2h `+1`，月度 3 天发情期 `×4` 且五档门槛降 15）、每日 08:00/手动两段式睡醒回想结算、同日正向事件 `100%→75%→50%→25%` 递减与负向全额结算、解决一次归位；
+>   - **严格权限白名单与隐私硬锁**：默认仅对主人 (`MASTER_QQ`) 开放且默认仅限私聊生效（公共群聊与未授权用户 100% 不可见、不注入、不结算）；在 8088 WebUI 新增「🔥 性欲面板 (Libido)」选项卡，支持 72h ECharts 曲线、快捷事件/调值/归位/周期设置、实时 Prompt 预览，以及逐好友 QQ 开放权限开关；
+>   - **安全自愈兼容**：当云端风控触发 `safe_retry_mode=True` 纯净重推时自动剥离该注入块，防止自愈死循环；改动前已建立 Git 分支 `backup/v5.3-pre-libido`、标签 `backup-v5.3-pre-libido` 与整包备份 `backup_v5.3_pre_libido.zip`。
+> - **V5.3 模块一：局部通道级 `low` 强度开关 (`core/state_manager.py`, `core/intent_router.py`, `attention/debounce_queue.py`, `webui/api/effort_api.py`, `webui/server.py`, `webui/templates/index.html`, `webui/static/js/`)**：
+>   - **默认全面取消前台 `low` 档**：未开启局部开关时，前台所有群聊与私聊对话 100% 禁用 `low`，统一走 `medium` 常规基准与 `high` 复杂/视觉/工具/走心升档；其他后台任务保持现状；
+>   - **局部通道隔离 + L1 局部强制 `low`**：以 `chat_id`（`private_<qq>` / `group_<gid>`）独立隔离并持久化至 `chat_state.json` 的 `_low_effort_channels`（支持跨进程 mtime 热感知）；某通道开启后强制走 `low`（仅安全自愈重试 `is_retry=True` 升至 `high`），完全不影响其他群聊与私聊；
+>   - **主人专属双端控制 (1C)**：QQ 侧仅认 `MASTER_QQ` 开放 0-LLM 指令（`开启low / 关闭low / low状态` 作用于当前通道，私聊支持 `查看全部low / 全部关闭low`）；WebUI 同步挂载 `/api/effort/low` 与 `/api/effort/low/manage`（兼容 FastAPI 与 NativeWebUIHandler）并在白名单管理页提供局部对话开关卡片。
+> - **V5.3 模块二：QQ 空间每日日记 2B 策展人模式 (`workers/qzone_diary.py`)**：
+>   - 修复 `allowed_chat_ids` 遗漏 `group_` 前缀导致 SQLite `chat_archive_fts` 全天群聊记录被丢弃的隐蔽 Bug；
+>   - 实装 0-Token 本地策展引擎 `curate_today_diary_highlights()`：融合当日 L2 中程记忆、B 站精选、完整对话切片与 7D 真实心情，仅精选 1~2 个高光切片并彻底拆除旧版早/中/晚三段流水轴；
+>   - 主力字数收紧至 20~95 字（长篇降至 `<=10%`），去公域作文腔与 AI 鸡汤结尾，注入最近 3 篇历史空间说说防撞车。
+> - **V5.3 模块三：B 站 3C 混合双轨 + V1 故事板九宫格 + V2 MCP 发动态 (`social/bilibili_auth.py`, `social/bilibili_client.py`, `social/bilibili_playwright.py`, `social/bili_storyboard.py`, `workers/bili_worker.py`, `bili_mcp_server.py`)**：
+>   - **3C 第一轨（现代原生协议）**：新增 `/x/frontend/finger/spi` 自动补全 `buvid3`/`buvid4`、HMAC-SHA256 `GenWebTicket` 换取 `bili_ticket` 与标准 WBI 签名 (`sign_wbi_params`)；重写收藏 `deal` 与动态 `create/dyn`（补齐 `upload_id`、`web_location=333.1365` 与完整请求头），修复 `run_bili_daily_dynamic_once` 登录态字典判真 Bug；
+>   - **3C 第二轨（Playwright 无头浏览器兜底）**：新增 `social/bilibili_playwright.py`（按需启动即用即关，0 常驻内存），当第一轨收藏或发动态受风控/参数拦截时自动启动 Chromium 真实执行收藏或打开 `t.bilibili.com` 填文案传图发布，并回收真实指纹反哺第一轨、失败自动留存诊断截图；
+>   - **V1 无字幕视频故事板九宫格 (`social/bili_storyboard.py`)**：融合 `dsh-see-now` 帧差变化量选帧与 `dsh-bili-scroll` 官方 `videoshot` 雪碧图，零视频下载拼成带时间戳的 3×3 九宫格 PNG 交由多模态 `view_file` 真看画面；
+>   - **V2 MCP 发动态**：`bili_mcp_server.py` 的 `bili_social` 新增 `action='publish_dynamic'`。
+> - **V5.3 模块四：增设国际象棋 & 中国象棋 (`toys/games/chess_engine.py`, `toys/games/xiangqi_engine.py`, `toys/board_renderer.py`, `toys/board_games.py`, `toys/games/session_store.py`, `toys/assets/`, `core/intent_router.py`, `qq_mcp_server.py`)**：
+>   - **4A 纯 Python 零依赖互动风双引擎**：完整实现国际象棋（易位/过路兵/升变/将死/逼和/重复和棋）与中国象棋（九宫/将帅照面/蹩马腿/塞象眼/炮隔山打牛/兵卒过河）规则与 Alpha-Beta + 静态搜索 + PST + 7D 心情棋风联动；
+>   - **坐标 + 记谱双输入**：国际象棋兼容 UCI (`e2e4`/`e7e8q`) 与 SAN (`Nf3`/`O-O`)；中国象棋兼容标准中文纵线记谱 (`炮二平五`/`马8进7`/`前马进七`) 与 UCCI 网格坐标 (`H2E2`)；
+>   - **G1 独立开源高清视觉素材 (`toys/assets/`)**：集成 12 张 Lichess/Wikimedia 开源 `cburnett` 国际象棋透明 PNG 与 14 张 4× 超采样楷书立体雕木中国象棋 PNG，配套走子高亮、移动轨迹箭头与将军红光警示。
+> - **V5.3 模块五：时间随机主动冒泡 5A 叠 5C 优化 (`workers/breathe.py`)**：
+>   - 保持高斯时间随机冒泡节律，群聊冷场重配话头（简单亲切时段问候 ~35% / 轻日常碎碎念 ~20% / B 站热搜轻吐槽回调至 ~25% / 5C 群内公开共同经历轻回访 ~20%），早晚安每通道每天限 1 次且防连续同款复读；
+>   - 私聊活跃时段微调为 `07:30 ~ 23:00`，以简单亲切问候 + 亲疏四档日常分享为主力 (~40~45%)，叠加 5C 低概率多模态彩蛋与群冷场连续 2 次无回复自动 `×1.4` 退避。
 > - **V5.2 情绪引擎动力学重构（新版 E1 四把物理锁）与 M2 437 条静态全复合词库 (`social/mood_manager.py`, `social/mood_lexicon.py`, `workers/post_turn_observer.py`)**：
 >   - **保留 7 维结构与统一五档梯度**：100% 兼容 `happy / calm / sweet / proud / worry / sulky / jealous` 及 WebUI 雷达图与多情感语音，统一五档阈值（0档静默 `0~29`、1档轻度 `30~54`、2档中度 `55~69`、3档强烈 `70~89`、4档爆表 `90~100`）；
 >   - **防通胀四把物理锁（新版 E1 自然演化）**：① **五段高位阻力**（单维原始冲量收紧至 `[-35, +35]`，正向增长按 `1.00x / 0.70x / 0.45x / 0.33x / 0.22x` 分段平滑积分）；② **温和对立压制与 `1 : 0.7` 跨极共存保护**（暖/冷色系对立柔和回压 `0.32x`，绝不一刀清零，允许对立侧以主导峰值的 `0.7` 倍共存，自然演绎“嘴硬吃醋但心里甜丝丝”等跨极复合情绪）；③ **两段式退潮衰减**（`>= 70` 半衰期缩短至 `22.5` 分钟，`< 70` 维持 `55` 分钟，跨 `70` 边界精确分段指数扣减）；④ **观察者源头限流**（Prompt 与解析层双重约束单次最多变动 3 个维度，严控 `calm` 仅在安抚/安静陪伴时加分，不对第 3 名及以后激活维度做硬截断）；
@@ -877,7 +922,7 @@
   - **异地双机通信与 Tailscale IP 访问**：在 Linux 边缘主机（联想 IdeaPad，专网 IP `YOUR_EDGE_NODE_IP`）启动后，笔记本客户端或局域网设备通过 `http://YOUR_EDGE_NODE_IP:8088` 即可无感直接访问交互。
 
 ### 40. GPT-SoVITS-v5 九维多情感语音 MCP 引擎、v5turbo 潜空间 ge 风格融合与深夜陪伴模式 (Multi-Emotion TTS Engine, Latent ge Style Blending & Late-Night Whisper Mode v4.8)
-- **底层 GPU 算力解放与百倍推理提速 (`D:\GPT-TTS\GPT-SoVITS-v5`)**：
+- **底层 GPU 算力解放与百倍推理提速 (`C:\path\to\GPT-SoVITS-v5`)**：
   - **修复 CPU-Only PyTorch 陷阱与 cuDNN Autotune 36 秒阻塞**：将推理环境升级为 `torch==2.11.0+cu128` (`fp16` + `TF32` 开启)，并在 `GPT_SoVITS/Accel/PyTorch/__init__.py` 与 `TTS.py` 中禁用 `torch.backends.cudnn.benchmark = False`（根除 1D 变长卷积在每次不同句长下耗时 15~36 秒重跑 cuDNN 启发式搜索的致命卡顿），同时遵循 `TORCH_NUM_THREADS=2` 限制 CPU 线程争抢；
   - **显存 16 槽位 LRU 缓存与启动预热 (`TTS.py`, `api_v2.py`)**：为全部 8 段参考音频的 HuBERT 语义码、声谱图、BERT 文本特征及 Vocoder 梅尔特征建立显存常驻 LRU 缓存，并在 `api_v2.py` 启动时预热 CUDA Graph 与全部情绪参考，使单句合成耗时从 **39.2 秒** 降至 **1.06 ~ 1.66 秒**（提速约 30 倍），显存占用稳定在 **~3.4 GB**。
 - **方案 3-A + 接口 α：`v5turbo` 潜空间 `ge` 风格向量双情感融合 (`TTS.py`, `tools/voice_tools.py`)**：
@@ -966,6 +1011,40 @@
   - `route_chat_effort_with_reason()` 优先级 2.2 群聊话题压力出场放宽普通问号（复杂问句已由 P1 拦截），仅保留无图且无敏感工具域即走 `low`；
   - `run_bili_daily_dynamic_once()` 动态 Prompt 中的“晚上 11 点左右”改为动态北京时间 `{now_utc8.strftime('%H:%M')}`；
   - 群压力爆发日志中的硬编码“进入 5s 防抖”对齐为动态 `{GROUP_DEBOUNCE_WAIT:.1f}s`。
+- **【词库语感提示化精修】(`social/mood_lexicon.py`)**：
+  - 全量重修 437 条 M2 静态情绪词库，去除第三人称动作旁白与预设第二人称“你”，全部转为“给弥酱提示现在大概是什么心情”的内心状态短词（0 动作强迫、0 字数超标、全量 `<= 10` 字）。
+
+### 45. V5.3 五大体验与底层能力全面升级 (Local Low Switch + QZone Curator + Bili 3C/V1/V2 + Chess/Xiangqi + Warm Random Breathe)
+- **模块一：局部通道级 `low` 强度开关 (`1C + 1-α + L1`)**：
+  - 默认前台全通道禁用 `low`（常规 `medium`、复杂/视觉/工具/走心 `high`），其他后台任务维持现状；
+  - `core/state_manager.py` 在 `chat_state.json` 的 `_low_effort_channels` 中维护通道级开关并做 mtime 跨进程热读取；`core/intent_router.py` 对已开启局部开关的通道强制走 `low`（`is_retry=True` 仍升 `high`）；
+  - `attention/debounce_queue.py` 挂载仅限 `MASTER_QQ` 的 0-LLM 指令（`开启low / 关闭low / low状态 / 查看全部low / 全部关闭low`）；`webui/api/effort_api.py` 与 `webui/server.py` / `index.html` / `whitelist_view.js` 同步提供双端可视化开关。
+- **模块二：QQ 空间每日日记 2B 0-Token 策展人模式 (`workers/qzone_diary.py`)**：
+  - 修复 `allowed_chat_ids` 缺少 `group_` 前缀导致 SQLite 群聊档案被丢弃的 Bug；
+  - 新增 `curate_today_diary_highlights()` 融合 L2 记忆、B 站高光、完整群聊切片与 7D 真实心情，仅筛出 1~2 个具体切片并彻底移除早/中/晚三段流水时间轴；主力篇幅回归 20~95 字，长篇压低至 `<=10%`，传入最近 3 篇历史防撞车。
+- **模块三：Bilibili 3C 混合双轨 + V1 故事板九宫格 + V2 MCP 发动态**：
+  - `social/bilibili_auth.py` 新增 `/x/frontend/finger/spi` (`buvid3`/`buvid4`)、`GenWebTicket` (`bili_ticket`) 与标准 WBI 签名 (`sign_wbi_params`)；
+  - `social/bilibili_client.py` 与 `social/bilibili_playwright.py` 构成 3C 混合双轨（现代原生协议优先 -> Playwright 无头 Chromium 真实操作兜底，失败留存诊断截图并回写新鲜指纹）；修复 `run_bili_daily_dynamic_once` 登录态字典判真 Bug；
+  - `social/bili_storyboard.py` 借鉴 `dsh-see-now` + `dsh-bili-scroll` 实现 `videoshot` 帧差选帧与 3×3 九宫格拼图，挂载至 `workers/bili_worker.py` 无/短字幕视频精看；`bili_mcp_server.py` 新增 `bili_social(action='publish_dynamic')`。
+- **模块四：增设国际象棋 & 中国象棋 (`4A + 双输入 + G1`)**：
+  - 新建 `toys/games/chess_engine.py`（8×8 国际象棋，UCI + SAN 双解析）与 `toys/games/xiangqi_engine.py`（9×10 中国象棋，中文纵线记谱 + UCCI 双解析），均采用纯 Python Alpha-Beta + 静态搜索 + PST + 7D 心情棋风联动；
+  - 新建 `toys/assets/chess/`（12 张开源 `cburnett` PNG）与 `toys/assets/xiangqi/`（14 张 4× 超采样楷书立体雕木 PNG），`toys/board_renderer.py` 新增 `render_chess_board` 与 `render_xiangqi_board`（含缺失回退绘制、轨迹箭头与将军警示），全链路接入 `toys/board_games.py`、`session_store.py`、`core/intent_router.py` 与 `qq_mcp_server.py`。
+- **模块五：优化时间随机主动冒泡 (`5A 叠 5C`)**：
+  - `workers/breathe.py` 保持高斯时间随机间隔，新增 `_breathe_meta` 持久化每日早晚安单通道限 1 次锁、防连续同类问候与冷场连续 2 次无回复 `×1.4` 退避；
+  - 群聊冷场重配为简单亲切时段问候 (~35%) + 轻日常碎碎念 (~20%) + 去主持腔 B 站热搜吐槽 (~25%) + 严格隔离私聊/空间隐私的 5C 公开共同经历轻回访 (~20%)；私聊窗口调整为 `07:30~23:00`，提升简单亲切问候与亲疏分层日常分享至主力 (~40~45%) 并叠加低概率多模态彩蛋。
+- **验证结论**：91 个 `.py` 文件 AST & `symtable` 全量扫描 0 语法/符号错误，19 个变更模块 0 未定义全局符号，全量核心模块导入 0 内部错误，五大模块及端到端回归单元测试全部通过。
+
+### 46. V5.3.1 `dsh-libido-panel` 原生 Python 0和谐方案 A 移植与 WebUI 权限白名单控制
+- **改动前双备份**：建立 Git 分支 `backup/v5.3-pre-libido` + 标签 `backup-v5.3-pre-libido` 与本地整包压缩备份 `backup_v5.3_pre_libido.zip`，支持随时一键回滚至 V5.3 基线。
+- **核心模块 (`social/libido_panel.py`, `config.py`, `webui/config.py`)**：
+  - 零 Node.js 依赖完整移植 `amtoki520/dsh-libido-panel` 动力学：0–100 数值、五档 0 和谐 `TIER_VOICE`（`平静 / 有点想 / 难耐 / 快撑不住 / 发情`）、SHA256 不规则清醒推进、每日 08:00 及手动两段式睡醒回想（10~20% 刚醒 + 30~90min 后 20~35% 回涨）、同日正向事件递减 (`100%/75%/50%/25%`)、月度 3 天发情期（默认 18~20 日，WebUI 可调）、72h 逐小时曲线生成；
+  - 独立持久化至 `libido_state.json`（mtime 跨进程热读取，严禁随补丁打包 `.json`）。
+- **权限硬锁、对话注入与事后自动结算 (`attention/context_builder.py`, `workers/post_turn_observer.py`)**：
+  - `is_libido_allowed(user_id, is_private)` 硬校验总开关 + 仅私聊锁（默认开启防群泄露） + `allowed_users` 白名单（默认仅 `MASTER_QQ` 开启）；
+  - `context_builder.py` 仅对授权用户注入实时 `moodLine`，且 `safe_retry_mode=True` 自动剥离以防触发云端拦截死循环；
+  - `post_turn_observer.py` 仅在授权通道对话结算时追加可选 `libido_event` 自动记录事件/安抚归位，非授权通道 0 改动。
+- **WebUI 专属面板 (`webui/api/libido_api.py`, `webui/server.py`, `webui/templates/index.html`, `webui/static/js/libido_view.js`, `api_client.js`, `app.js`)**：
+  - 新增「🔥 性欲面板 (Libido)」选项卡，提供 72h ECharts 曲线、手动调值/解决一次/手动睡醒、9 个原版快捷事件按钮、周期与初始值设置、实时 Prompt 注入预览、以及逐 QQ 好友开放权限开关与事件账本。
 
 
 ---
@@ -975,7 +1054,7 @@
   - 现实生活作息锚定 (Circadian Rhythm)：结合早晨起床、午饭摸鱼、下班打卡等时段自发随笔。
   - 迟发共鸣与延时回响 (Delayed Echo)：冷场后以“刚爬楼看完”的姿态针对前段热点延时吐槽。
   - 自主生活碎片库 (Life Snippets)：主动向群内抛出打游戏战绩、抽卡体验等话题引导互动。
-- **多平台拓展**: 既然已用 `SeekaiGeminiqqAgent` 作为核心代号，未来不仅限于 QQ，该 Daemon 思路可直接复用于微信、Discord 的桥接。
+- **多平台拓展**: 既然已用 `GeminiAgyQQAgent` 作为核心代号，未来不仅限于 QQ，该 Daemon 思路可直接复用于微信、Discord 的桥接。
 - **Subagent 异步深思双轨制**: 针对耗时较长（>15秒）的跨天长文本总结与网络分析，让主智能体秒级应答“等我翻翻记录喵”，后台调度 Subagent 异步产出后二次推送，维持聊天即时响应。
 
 

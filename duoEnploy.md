@@ -25,7 +25,7 @@
                                 ▼
                     ┌──────────────────────────────────────────────┐
                     │ 联想边缘服务器 (IdeaPad 330C-14IKB)            │
-                    │ 专网 IP: YOUR_EDGE_NODE_IP / 本地局域网 Wi-Fi │
+                    │ 专网 IP: YOUR_EDGE_NODE_IP / 宿舍 Wi-Fi (本地局域网 Wi-Fi) │
                     │ 硬件: i5-8250U (4C8T) + 8G RAM + 8G Swap      │
                     ├──────────────────────────────────────────────┤
                     │ 1. 业务大脑: bot_daemon.py (systemd 24/7常驻)  │
@@ -40,7 +40,7 @@
 | 维度 / 节点 | **节点 A：阿里云轻量接入网关** | **节点 B：联想边缘算力服务器** |
 | :--- | :--- | :--- |
 | **物理形态** | 阿里云 ECS (2核2G) | 联想 IdeaPad 330C-14IKB (4核8线程 / 128G SSD) |
-| **网络环境** | 阿里云机房固定公网 IP | 本地局域网 `YOUR_WIFI_SSID`（无感直连） |
+| **网络环境** | 阿里云机房固定公网 IP | 宿舍校园网 `本地局域网 Wi-Fi`（无感直连） |
 | **Tailscale 节点 IP** | `YOUR_ONEBOT_SERVER_IP` | `YOUR_EDGE_NODE_IP` |
 | **承载业务** | **纯粹接入层**：NapCat / SnowLuma QQ 官方客户端 | **核心大脑层**：`bot_daemon`、`agy` 推理、B站与空间业务 |
 | **监听端口** | HTTP `8300` / WebSocket `8301`（对 Tailscale 放行） | 混合代理 `7890` / 控制接口 `9090`（仅绑定本地 127.0.0.1） |
@@ -88,7 +88,7 @@
 - **分流模式 (Rule 铁律)**：
   - **国内直连**：QQ 客户端交互、腾讯图片 CDN、B站 API 直连中国电信出口，防止国内封号；
   - **定向翻墙**：仅对 Google API、Gemini 官方端点、Cloudflare 注入代理；
-  - **节点硬锁定**：通过 [force_global.py](force_global.py) 将全量选择组锁定至免 403 地区风控的优质干净节点。
+  - **节点硬锁定**：通过 [force_global.py](file:///d:/Project/qqAgent/force_global.py) 将全量选择组锁定至 `[圣何塞7 | 三网推荐]` 等免 403 地区风控的优质干净节点。
 
 ---
 
@@ -98,10 +98,10 @@
 - **Python 虚拟环境**：`/home/your_user/qqAgent/venv`
 - **Python 解释器路径**：`/home/your_user/qqAgent/venv/bin/python`
 - **Antigravity CLI 路径**：`/home/your_user/.local/bin/agy`（已配置全局软链接至 `/usr/local/bin/agy` 与 `/root/.local/bin/agy`）
-- **MCP 配置文件**：[.agents/mcp_config.json](.agents/mcp_config.json)
+- **MCP 配置文件**：[.agents/mcp_config.json](file:///d:/Project/qqAgent/.agents/mcp_config.json)
   - `qq-agent`：`/home/your_user/qqAgent/venv/bin/python /home/your_user/qqAgent/qq_mcp_server.py`
   - `bilibili-agent`：`/home/your_user/qqAgent/venv/bin/python /home/your_user/qqAgent/bili_mcp_server.py`
-- **核心全局配置**：[config.py](config.py)
+- **核心全局配置**：[config.py](file:///d:/Project/qqAgent/config.py)
   - `ONEBOT_HTTP_URL = "http://YOUR_ONEBOT_SERVER_IP:8300"`
   - `ONEBOT_WS_URL = "ws://YOUR_ONEBOT_SERVER_IP:8301/?access_token=..."`
   - `DEFAULT_AGY_MODEL = "gemini-3.8-flash"`

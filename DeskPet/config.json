@@ -1,0 +1,91 @@
+{
+  "port": 7797,
+  "token": "YOUR_NAPCAT_TOKEN",
+  "brainCandidates": [
+    "http://127.0.0.1:18302",
+    "http://127.0.0.1:8088",
+    "http://YOUR_EDGE_NODE_IP:8088",
+    "http://YOUR_EDGE_NODE_IP:18302"
+  ],
+  "ttsCandidates": [
+    "http://127.0.0.1:9880",
+    "http://YOUR_TTS_SERVER_IP:9880"
+  ],
+  "skin": {
+    "figure": "mi",
+    "scheme": "starlight",
+    "palette": "purple",
+    "head": "none",
+    "side": "none",
+    "glasses": "none",
+    "neck": "none"
+  },
+  "prefs": {
+    "roam": "off",
+    "sound": true,
+    "theme": "dark",
+    "scale": 2.7,
+    "bubbleSize": 1,
+    "fontSize": 1,
+    "bubbleSpeed": 1,
+    "sayBubbleHoldSec": 0,
+    "glow": 7,
+    "user": "主人",
+    "micDevice": "",
+    "hoverButtons": [
+      "chat",
+      "voice",
+      "peek",
+      "roam",
+      "size",
+      "dress"
+    ],
+    "rememberPosition": true,
+    "doubleClickChat": true,
+    "statusBubble": true,
+    "saidBubbles": true,
+    "saidBubbleHoldSec": 0,
+    "hideWhenFullscreen": false,
+    "passWhenFullscreen": false,
+    "overTaskbar": true,
+    "hideFromCapture": false,
+    "clickThrough": false,
+    "proactivePeek": true,
+    "perchWindows": true
+  },
+  "proactive": {
+    "enabled": true,
+    "allowInGame": true,
+    "normalIntervalSec": 900,
+    "gameIntervalSec": 240,
+    "sceneSwitchCooldownSec": 180,
+    "maxUserIdleSec": 300
+  },
+  "cua": {
+    "enabled": true,
+    "control": true,
+    "permission": "ask-once",
+    "grantMinutes": 30,
+    "skipTerminalAsk": false,
+    "userIdleMs": 2000,
+    "maxYieldWaitMs": 15000,
+    "typeChunkDelayMs": 20,
+    "screenshot": {
+      "maxWidth": 1280,
+      "maxHeight": 800,
+      "quality": 78,
+      "afterAction": true,
+      "settleMs": 500
+    }
+  },
+  "asr": {
+    "enabled": true,
+    "engine": "sensevoice",
+    "language": "zh",
+    "hotkey": "LeftAlt*2",
+    "typeHotkey": "LeftCtrl*2",
+    "typeKeyEnabled": true,
+    "mode": "hold"
+  },
+  "startX": 0.78
+}

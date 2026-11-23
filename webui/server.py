@@ -48,16 +48,54 @@ from webui.api.qzone_care_api import (
     get_qzone_care_overview,
     manage_qzone_special_care_api
 )
+from webui.api.effort_api import (
+    get_low_effort_overview,
+    manage_low_effort_api
+)
+from webui.api.libido_api import (
+    get_libido_overview,
+    manage_libido_api
+)
+from webui.api.deskpet_api import (
+    get_deskpet_overview_api,
+    manage_deskpet_api
+)
 
 # 检测是否可用高性能 ASGI 依赖 (FastAPI + Uvicorn)
 HAS_FASTAPI = False
 try:
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
     from fastapi.responses import HTMLResponse, JSONResponse, Response
     import uvicorn
     HAS_FASTAPI = True
 except ImportError:
     HAS_FASTAPI = False
+
+
+def _forward_to_bubble_dispatcher(path: str, payload: dict) -> dict:
+    """将 8088 WebUI 收到的 DeskPet 事件或反向轮询请求转发至 bot_daemon 主事件循环所在的 127.0.0.1:18302"""
+    import httpx
+    from config import INTERNAL_BUBBLE_PORT, NAPCAT_TOKEN
+    try:
+        with httpx.Client(timeout=4.0, trust_env=False) as client:
+            r = client.post(
+                f"http://127.0.0.1:{INTERNAL_BUBBLE_PORT}{path}",
+                json=payload,
+                headers={"Authorization": f"Bearer {NAPCAT_TOKEN}", "Content-Type": "application/json; charset=utf-8"},
+            )
+            if r.status_code == 200:
+                return r.json()
+    except Exception:
+        pass
+    if path in ("/deskpet_event", "/api/deskpet/event"):
+        import threading
+        try:
+            from attention.debounce_queue import handle_deskpet_event
+            threading.Thread(target=lambda: asyncio.run(handle_deskpet_event(payload)), daemon=True).start()
+            return {"ok": True, "queued": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+    return {"ok": False, " commands": []}
 
 
 # =========================================================================
@@ -198,6 +236,124 @@ def create_fastapi_app() -> "FastAPI":
     ):
         return manage_qzone_special_care_api(action, user_id, nickname, reason)
 
+    @app.get("/api/effort/low")
+    async def api_effort_low():
+        return get_low_effort_overview()
+
+    @app.get("/api/effort/low/manage")
+    @app.post("/api/effort/low/manage")
+    async def api_effort_low_manage(
+        action: str = "toggle",
+        chat_id: str = "",
+        label: str = "",
+    ):
+        return manage_low_effort_api(action=action, chat_id=chat_id, label=label)
+
+    @app.get("/api/libido")
+    async def api_libido():
+        return get_libido_overview()
+
+    @app.get("/api/libido/manage")
+    @app.post("/api/libido/manage")
+    async def api_libido_manage(
+        action: str = "event",
+        value: int = 0,
+        delta: int = 0,
+        note: str = "__KEEP__",
+        user_id: str = "",
+        label: str = "",
+        enabled: str = "",
+        private_only: str = "",
+        baseline: str = "",
+        season_start_day: str = "",
+        season_days: str = "",
+    ):
+        return manage_libido_api(
+            action=action,
+            value=value,
+            delta=delta,
+            note=note,
+            user_id=user_id,
+            label=label,
+            enabled=enabled,
+            private_only=private_only,
+            baseline=baseline,
+            season_start_day=season_start_day,
+            season_days=season_days,
+        )
+
+    @app.get("/api/deskpet")
+    async def api_deskpet():
+        return get_deskpet_overview_api()
+
+    @app.get("/api/deskpet/manage")
+    @app.post("/api/deskpet/manage")
+    async def api_deskpet_manage(
+        action: str = "update_prefs",
+        proactive_peek: str = "",
+        allow_in_game: str = "",
+        normal_interval_sec: str = "",
+        game_interval_sec: str = "",
+        cua_enabled: str = "",
+        cua_control: str = "",
+        cua_permission: str = "",
+        scale: str = "",
+        roam: str = "",
+        pass_when_fullscreen: str = "",
+        talk_hotkey: str = "",
+        talk_mode: str = "",
+        type_hotkey: str = "",
+        type_key_enabled: str = "",
+        script: str = "",
+        emotion: str = "auto",
+    ):
+        return manage_deskpet_api(
+            action=action,
+            proactive_peek=proactive_peek,
+            allow_in_game=allow_in_game,
+            normal_interval_sec=normal_interval_sec,
+            game_interval_sec=game_interval_sec,
+            cua_enabled=cua_enabled,
+            cua_control=cua_control,
+            cua_permission=cua_permission,
+            scale=scale,
+            roam=roam,
+            pass_when_fullscreen=pass_when_fullscreen,
+            talk_hotkey=talk_hotkey,
+            talk_mode=talk_mode,
+            type_hotkey=type_hotkey,
+            type_key_enabled=type_key_enabled,
+            script=script,
+            emotion=emotion,
+        )
+
+    @app.post("/deskpet_event")
+    @app.post("/api/deskpet/event")
+    async def api_deskpet_event(request: Request):
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                return JSONResponse({"ok": False, "error": "invalid json payload"}, status_code=400)
+            return _forward_to_bubble_dispatcher("/deskpet_event", payload)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    @app.post("/deskpet_poll")
+    async def api_deskpet_poll(request: Request):
+        try:
+            payload = await request.json()
+            return _forward_to_bubble_dispatcher("/deskpet_poll", payload if isinstance(payload, dict) else {})
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    @app.post("/deskpet_result")
+    async def api_deskpet_result(request: Request):
+        try:
+            payload = await request.json()
+            return _forward_to_bubble_dispatcher("/deskpet_result", payload if isinstance(payload, dict) else {})
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket):
         await ws.accept()
@@ -263,6 +419,17 @@ class NativeWebUIHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path in ("/deskpet_event", "/api/deskpet/event", "/deskpet_poll", "/deskpet_result"):
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+                raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
+                payload = json.loads(raw.decode("utf-8"))
+                target_p = "/deskpet_event" if parsed.path == "/api/deskpet/event" else parsed.path
+                self._send_json_response(_forward_to_bubble_dispatcher(target_p, payload))
+            except Exception as e:
+                self._send_json_response({"ok": False, "error": str(e)}, status_code=400)
+            return
         self.do_GET()
 
     def do_DELETE(self):
@@ -377,6 +544,57 @@ class NativeWebUIHandler(BaseHTTPRequestHandler):
                 nick = query.get("nickname", [""])[0]
                 reason = query.get("reason", [""])[0]
                 self._send_json_response(manage_qzone_special_care_api(act, uid, nick, reason))
+                return
+            if path == "/api/effort/low":
+                self._send_json_response(get_low_effort_overview())
+                return
+            if path == "/api/effort/low/manage":
+                act = query.get("action", ["toggle"])[0]
+                cid = query.get("chat_id", [""])[0]
+                lbl = query.get("label", [""])[0]
+                self._send_json_response(manage_low_effort_api(act, cid, lbl))
+                return
+            if path == "/api/libido":
+                self._send_json_response(get_libido_overview())
+                return
+            if path == "/api/libido/manage":
+                self._send_json_response(manage_libido_api(
+                    action=query.get("action", ["event"])[0],
+                    value=int(query.get("value", [0])[0]),
+                    delta=int(query.get("delta", [0])[0]),
+                    note=query.get("note", ["__KEEP__"])[0],
+                    user_id=query.get("user_id", [""])[0],
+                    label=query.get("label", [""])[0],
+                    enabled=query.get("enabled", [""])[0],
+                    private_only=query.get("private_only", [""])[0],
+                    baseline=query.get("baseline", [""])[0],
+                    season_start_day=query.get("season_start_day", [""])[0],
+                    season_days=query.get("season_days", [""])[0],
+                ))
+                return
+            if path == "/api/deskpet":
+                self._send_json_response(get_deskpet_overview_api())
+                return
+            if path == "/api/deskpet/manage":
+                self._send_json_response(manage_deskpet_api(
+                    action=query.get("action", ["update_prefs"])[0],
+                    proactive_peek=query.get("proactive_peek", [""])[0],
+                    allow_in_game=query.get("allow_in_game", [""])[0],
+                    normal_interval_sec=query.get("normal_interval_sec", [""])[0],
+                    game_interval_sec=query.get("game_interval_sec", [""])[0],
+                    cua_enabled=query.get("cua_enabled", [""])[0],
+                    cua_control=query.get("cua_control", [""])[0],
+                    cua_permission=query.get("cua_permission", [""])[0],
+                    scale=query.get("scale", [""])[0],
+                    roam=query.get("roam", [""])[0],
+                    pass_when_fullscreen=query.get("pass_when_fullscreen", [""])[0],
+                    talk_hotkey=query.get("talk_hotkey", [""])[0],
+                    talk_mode=query.get("talk_mode", [""])[0],
+                    type_hotkey=query.get("type_hotkey", [""])[0],
+                    type_key_enabled=query.get("type_key_enabled", [""])[0],
+                    script=query.get("script", [""])[0],
+                    emotion=query.get("emotion", ["auto"])[0],
+                ))
                 return
 
             self.send_error(404, "API Endpoint Not Found")

@@ -17,8 +17,10 @@ import uuid
 import io
 import base64
 import asyncio
+import hashlib
+import hmac
+from urllib.parse import parse_qs, urlparse, urlencode
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -103,16 +105,29 @@ def load_bili_credential() -> "Credential | None":
 def save_bili_credential(cred_dict: dict) -> str:
     """
     原子写入凭证到本地磁盘：先写 .tmp 临时文件，再通过 os.replace 替换，
-    彻底消除写一半被杀进程损坏文件的隐患。
+    彻底消除写一半被杀进程损坏文件的隐患，同时保留/写入扩展指纹字段 (buvid4 / bili_ticket)。
     """
     os.makedirs(os.path.dirname(os.path.abspath(BILI_CREDENTIAL_FILE)), exist_ok=True)
     tmp_path = BILI_CREDENTIAL_FILE + ".tmp"
-    
+
+    existing = {}
+    if os.path.exists(BILI_CREDENTIAL_FILE):
+        try:
+            with open(BILI_CREDENTIAL_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                existing = loaded
+        except Exception:
+            existing = {}
+
     clean_data = {
-        "sessdata": str(cred_dict.get("sessdata") or cred_dict.get("SESSDATA") or "").strip(),
-        "bili_jct": str(cred_dict.get("bili_jct") or cred_dict.get("BILI_JCT") or "").strip(),
-        "buvid3": str(cred_dict.get("buvid3") or cred_dict.get("BUVID3") or "").strip(),
-        "dedeuserid": str(cred_dict.get("dedeuserid") or cred_dict.get("DedeUserID") or cred_dict.get("mid") or "").strip()
+        "sessdata": str(cred_dict.get("sessdata") or cred_dict.get("SESSDATA") or existing.get("sessdata") or "").strip(),
+        "bili_jct": str(cred_dict.get("bili_jct") or cred_dict.get("BILI_JCT") or existing.get("bili_jct") or "").strip(),
+        "buvid3": str(cred_dict.get("buvid3") or cred_dict.get("BUVID3") or existing.get("buvid3") or "").strip(),
+        "buvid4": str(cred_dict.get("buvid4") or cred_dict.get("BUVID4") or existing.get("buvid4") or "").strip(),
+        "bili_ticket": str(cred_dict.get("bili_ticket") or existing.get("bili_ticket") or "").strip(),
+        "bili_ticket_ts": float(cred_dict.get("bili_ticket_ts") or existing.get("bili_ticket_ts") or 0.0),
+        "dedeuserid": str(cred_dict.get("dedeuserid") or cred_dict.get("DedeUserID") or cred_dict.get("mid") or existing.get("dedeuserid") or "").strip(),
     }
 
     with open(tmp_path, "w", encoding="utf-8") as f:
@@ -121,6 +136,204 @@ def save_bili_credential(cred_dict: dict) -> str:
     os.replace(tmp_path, BILI_CREDENTIAL_FILE)
     print(f"✅ [bili_auth] 凭证已成功原子落盘: {BILI_CREDENTIAL_FILE} (UID: {clean_data['dedeuserid']})", file=sys.stderr)
     return BILI_CREDENTIAL_FILE
+
+
+# ============================================================
+# 现代 B站 协议指纹补全 (buvid3 / buvid4 / bili_ticket) 与 WBI 签名
+# ============================================================
+_WBI_KEY_CACHE: dict = {"img_key": "", "sub_key": "", "fetched_at": 0.0}
+
+_MIXIN_KEY_ENC_TAB = [
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
+    33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
+    61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11,
+    36, 20, 34, 44, 52,
+]
+
+
+def load_bili_fingerprint() -> dict:
+    """读取本地落盘的 buvid3 / buvid4 / bili_ticket 指纹缓存"""
+    if not os.path.exists(BILI_CREDENTIAL_FILE):
+        return {"buvid3": "", "buvid4": "", "bili_ticket": "", "bili_ticket_ts": 0.0}
+    try:
+        with open(BILI_CREDENTIAL_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return {
+                "buvid3": str(data.get("buvid3") or data.get("BUVID3") or "").strip(),
+                "buvid4": str(data.get("buvid4") or data.get("BUVID4") or "").strip(),
+                "bili_ticket": str(data.get("bili_ticket") or "").strip(),
+                "bili_ticket_ts": float(data.get("bili_ticket_ts") or 0.0),
+            }
+    except Exception:
+        pass
+    return {"buvid3": "", "buvid4": "", "bili_ticket": "", "bili_ticket_ts": 0.0}
+
+
+def update_bili_fingerprint_cookies(updates: dict) -> dict:
+    """将新获取的 buvid3/buvid4/bili_ticket 合并回写本地凭证文件（不丢失已有字段）"""
+    if not updates or not isinstance(updates, dict):
+        return load_bili_fingerprint()
+    if not os.path.exists(BILI_CREDENTIAL_FILE):
+        return load_bili_fingerprint()
+    try:
+        with open(BILI_CREDENTIAL_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or not data.get("sessdata"):
+            return load_bili_fingerprint()
+        changed = False
+        for k in ("buvid3", "buvid4", "bili_ticket"):
+            v = str(updates.get(k) or "").strip()
+            if v and v != str(data.get(k, "")):
+                data[k] = v
+                changed = True
+        if updates.get("bili_ticket"):
+            data["bili_ticket_ts"] = time.time()
+            changed = True
+        if changed:
+            save_bili_credential(data)
+    except Exception:
+        pass
+    return load_bili_fingerprint()
+
+
+async def ensure_bili_fingerprints(credential: "Credential | None" = None) -> dict:
+    """
+    确保当前 B站 会话具备完整的现代浏览器指纹 Cookie：
+    1) 缺少 buvid3/buvid4 时，自动调 GET /x/frontend/finger/spi 获取官方真实指纹；
+    2) 缺少或超过 48h 的 bili_ticket 时，自动通过 HMAC-SHA256 调用 GenWebTicket 换取；
+    3) 自动回写至 bili_credential.json（并同步补全传入的 credential.buvid3）。
+    """
+    cred = credential or load_bili_credential()
+    fp = load_bili_fingerprint()
+    if cred and getattr(cred, "buvid3", "") and not fp.get("buvid3"):
+        fp["buvid3"] = str(cred.buvid3).strip()
+
+    updates = {}
+    base_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Referer": "https://www.bilibili.com/",
+    }
+    cookie_dict = {}
+    if cred and getattr(cred, "sessdata", ""):
+        cookie_dict["SESSDATA"] = cred.sessdata
+    if cred and getattr(cred, "bili_jct", ""):
+        cookie_dict["bili_jct"] = cred.bili_jct
+    if cred and getattr(cred, "dedeuserid", ""):
+        cookie_dict["DedeUserID"] = str(cred.dedeuserid)
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0, trust_env=False, headers=base_headers, cookies=cookie_dict) as client:
+            if not fp.get("buvid3") or not fp.get("buvid4"):
+                try:
+                    r_spi = await client.get("https://api.bilibili.com/x/frontend/finger/spi")
+                    j_spi = r_spi.json()
+                    if j_spi.get("code") == 0 and isinstance(j_spi.get("data"), dict):
+                        b3 = str(j_spi["data"].get("b_3") or "").strip()
+                        b4 = str(j_spi["data"].get("b_4") or "").strip()
+                        if b3:
+                            fp["buvid3"] = b3
+                            updates["buvid3"] = b3
+                        if b4:
+                            fp["buvid4"] = b4
+                            updates["buvid4"] = b4
+                except Exception:
+                    pass
+
+            ticket_age = time.time() - float(fp.get("bili_ticket_ts") or 0.0)
+            if not fp.get("bili_ticket") or ticket_age > 48 * 3600:
+                try:
+                    ts = int(time.time())
+                    hexsign = hmac.new(b"XgwSnGZ1p", f"ts{ts}".encode("utf-8"), hashlib.sha256).hexdigest()
+                    csrf = str(getattr(cred, "bili_jct", "") or "") if cred else ""
+                    params = {
+                        "key_id": "ec02",
+                        "hexsign": hexsign,
+                        "context[ts]": str(ts),
+                        "csrf": csrf,
+                    }
+                    r_tk = await client.post(
+                        "https://api.bilibili.com/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket",
+                        params=params,
+                    )
+                    j_tk = r_tk.json()
+                    if j_tk.get("code") == 0 and isinstance(j_tk.get("data"), dict):
+                        tk = str(j_tk["data"].get("ticket") or "").strip()
+                        if tk:
+                            fp["bili_ticket"] = tk
+                            fp["bili_ticket_ts"] = float(ts)
+                            updates["bili_ticket"] = tk
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    if cred and fp.get("buvid3") and not getattr(cred, "buvid3", ""):
+        try:
+            cred.buvid3 = fp["buvid3"]
+        except Exception:
+            pass
+
+    if updates:
+        update_bili_fingerprint_cookies(updates)
+    return fp
+
+
+def _get_mixin_key(orig: str) -> str:
+    return "".join(orig[i] for i in _MIXIN_KEY_ENC_TAB if i < len(orig))[:32]
+
+
+async def get_wbi_keys(credential: "Credential | None" = None, force: bool = False) -> tuple[str, str]:
+    """获取并缓存 B站 WBI img_key 与 sub_key（2 小时缓存）"""
+    now = time.time()
+    if (
+        not force
+        and _WBI_KEY_CACHE["img_key"]
+        and _WBI_KEY_CACHE["sub_key"]
+        and (now - float(_WBI_KEY_CACHE["fetched_at"])) < 7200.0
+    ):
+        return _WBI_KEY_CACHE["img_key"], _WBI_KEY_CACHE["sub_key"]
+
+    cred = credential or load_bili_credential()
+    cookies = {}
+    if cred and getattr(cred, "sessdata", ""):
+        cookies["SESSDATA"] = cred.sessdata
+    try:
+        async with httpx.AsyncClient(timeout=8.0, trust_env=False, headers=DEFAULT_BILI_HEADERS, cookies=cookies) as client:
+            resp = await client.get("https://api.bilibili.com/x/web-interface/nav")
+            rj = resp.json()
+            wbi_img = (rj.get("data") or {}).get("wbi_img") or {}
+            img_url = str(wbi_img.get("img_url", ""))
+            sub_url = str(wbi_img.get("sub_url", ""))
+            img_key = img_url.rsplit("/", 1)[-1].split(".")[0] if img_url else ""
+            sub_key = sub_url.rsplit("/", 1)[-1].split(".")[0] if sub_url else ""
+            if img_key and sub_key:
+                _WBI_KEY_CACHE["img_key"] = img_key
+                _WBI_KEY_CACHE["sub_key"] = sub_key
+                _WBI_KEY_CACHE["fetched_at"] = now
+                return img_key, sub_key
+    except Exception:
+        pass
+    return _WBI_KEY_CACHE["img_key"], _WBI_KEY_CACHE["sub_key"]
+
+
+async def sign_wbi_params(params: dict, credential: "Credential | None" = None) -> dict:
+    """对请求查询参数执行 B站 标准 WBI 签名，返回附带 wts 与 w_rid 的新字典"""
+    signed = {str(k): str(v) for k, v in (params or {}).items() if v is not None}
+    img_key, sub_key = await get_wbi_keys(credential)
+    if not img_key or not sub_key:
+        return signed
+    mixin_key = _get_mixin_key(img_key + sub_key)
+    signed["wts"] = str(int(time.time()))
+    ordered = dict(sorted(signed.items()))
+    filtered = {
+        k: "".join(ch for ch in str(v) if ch not in "!'()*")
+        for k, v in ordered.items()
+    }
+    query_str = urlencode(filtered)
+    w_rid = hashlib.md5((query_str + mixin_key).encode("utf-8")).hexdigest()
+    filtered["w_rid"] = w_rid
+    return filtered
 
 
 def clear_bili_credential() -> bool:

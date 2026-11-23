@@ -55,13 +55,163 @@ def load_chat_state():
         if os.path.exists(CHAT_STATE_FILE):
             with open(CHAT_STATE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                for gid, info in data.items():
-                    LAST_HUMAN_MSG_TIME[gid] = float(info.get("last_human_t", 0.0))
-                    LAST_BOT_MSG_TIME[gid] = float(info.get("last_bot_t", 0.0))
-                    CONSECUTIVE_BOT_MSG_COUNT[gid] = int(info.get("consecutive_bot_count", 0))
+                if isinstance(data, dict):
+                    for gid, info in data.items():
+                        if str(gid).startswith("_") or not isinstance(info, dict):
+                            continue
+                        LAST_HUMAN_MSG_TIME[gid] = float(info.get("last_human_t", 0.0))
+                        LAST_BOT_MSG_TIME[gid] = float(info.get("last_bot_t", 0.0))
+                        CONSECUTIVE_BOT_MSG_COUNT[gid] = int(info.get("consecutive_bot_count", 0))
                 safe_log("💾 [状态持久化] 成功从磁盘载入群聊发言状态与时间戳！")
     except Exception as e:
         safe_log(f"载入群聊状态失败: {e}")
+
+
+# ============================================================
+# 局部通道级 low 强度开关持久化（跨进程 mtime 热感知，默认全关）
+# ============================================================
+_LOW_EFFORT_CACHE: dict = {}
+_LOW_EFFORT_MTIME: float = -1.0
+
+
+def normalize_low_channel_id(raw_cid: str) -> str:
+    """规范化通道 ID：支持 private_xxx / group_xxx"""
+    cid = str(raw_cid or "").strip()
+    if not cid:
+        return ""
+    if cid.startswith(("private_", "group_")):
+        return cid
+    if cid.isdigit():
+        return f"group_{cid}"
+    return cid
+
+
+def get_low_effort_channels(force_reload: bool = False) -> dict:
+    """
+    从 CHAT_STATE_FILE 热读取当前已局部开启 low 档的通道字典。
+    返回格式: {chat_id_str: {"enabled": True, "updated_at": float, "label": str}}
+    """
+    global _LOW_EFFORT_CACHE, _LOW_EFFORT_MTIME
+    import os
+    if not os.path.exists(CHAT_STATE_FILE):
+        _LOW_EFFORT_CACHE = {}
+        _LOW_EFFORT_MTIME = -1.0
+        return {}
+    try:
+        mtime = os.path.getmtime(CHAT_STATE_FILE)
+        if not force_reload and mtime == _LOW_EFFORT_MTIME:
+            return dict(_LOW_EFFORT_CACHE)
+        with open(CHAT_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        raw_map = data.get("_low_effort_channels", {}) if isinstance(data, dict) else {}
+        cleaned = {}
+        if isinstance(raw_map, dict):
+            for k, v in raw_map.items():
+                cid = normalize_low_channel_id(k)
+                if not cid:
+                    continue
+                if isinstance(v, dict) and v.get("enabled", True):
+                    cleaned[cid] = {
+                        "enabled": True,
+                        "updated_at": float(v.get("updated_at", 0.0)),
+                        "label": str(v.get("label", "")),
+                    }
+                elif v is True:
+                    cleaned[cid] = {"enabled": True, "updated_at": 0.0, "label": ""}
+        elif isinstance(raw_map, list):
+            for item in raw_map:
+                cid = normalize_low_channel_id(str(item))
+                if cid:
+                    cleaned[cid] = {"enabled": True, "updated_at": 0.0, "label": ""}
+        _LOW_EFFORT_CACHE = cleaned
+        _LOW_EFFORT_MTIME = mtime
+        return dict(cleaned)
+    except Exception:
+        return dict(_LOW_EFFORT_CACHE)
+
+
+def is_channel_low_enabled(chat_id_str: str) -> bool:
+    """检查指定对话通道是否已被主人手动开启局部强制 low 档（默认 False）"""
+    cid = normalize_low_channel_id(chat_id_str)
+    if not cid:
+        return False
+    channels = get_low_effort_channels()
+    return bool(channels.get(cid, {}).get("enabled", False))
+
+
+def set_channel_low_enabled(chat_id_str: str, enabled: bool, label: str = "") -> dict:
+    """原子更新指定对话通道的局部 low 开关并落盘至 CHAT_STATE_FILE"""
+    global _LOW_EFFORT_CACHE, _LOW_EFFORT_MTIME
+    import os
+    cid = normalize_low_channel_id(chat_id_str)
+    if not cid:
+        return get_low_effort_channels(force_reload=True)
+
+    data = {}
+    if os.path.exists(CHAT_STATE_FILE):
+        try:
+            with open(CHAT_STATE_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data = loaded
+        except Exception:
+            data = {}
+
+    low_map = data.get("_low_effort_channels", {})
+    if not isinstance(low_map, dict):
+        low_map = {}
+
+    if enabled:
+        low_map[cid] = {
+            "enabled": True,
+            "updated_at": time.time(),
+            "label": str(label or low_map.get(cid, {}).get("label", "")),
+        }
+    else:
+        low_map.pop(cid, None)
+
+    data["_low_effort_channels"] = low_map
+    temp_file = f"{CHAT_STATE_FILE}.tmp"
+    with open(temp_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(temp_file, CHAT_STATE_FILE)
+
+    _LOW_EFFORT_CACHE = {
+        normalize_low_channel_id(k): v
+        for k, v in low_map.items()
+        if isinstance(v, dict) and v.get("enabled", True)
+    }
+    try:
+        _LOW_EFFORT_MTIME = os.path.getmtime(CHAT_STATE_FILE)
+    except OSError:
+        _LOW_EFFORT_MTIME = -1.0
+    return dict(_LOW_EFFORT_CACHE)
+
+
+def clear_all_low_effort_channels() -> dict:
+    """一键清空所有局部开启的 low 通道，恢复全局默认 medium/high"""
+    global _LOW_EFFORT_CACHE, _LOW_EFFORT_MTIME
+    import os
+    data = {}
+    if os.path.exists(CHAT_STATE_FILE):
+        try:
+            with open(CHAT_STATE_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data = loaded
+        except Exception:
+            data = {}
+    data["_low_effort_channels"] = {}
+    temp_file = f"{CHAT_STATE_FILE}.tmp"
+    with open(temp_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(temp_file, CHAT_STATE_FILE)
+    _LOW_EFFORT_CACHE = {}
+    try:
+        _LOW_EFFORT_MTIME = os.path.getmtime(CHAT_STATE_FILE)
+    except OSError:
+        _LOW_EFFORT_MTIME = -1.0
+    return {}
 
 
 def save_chat_state():
